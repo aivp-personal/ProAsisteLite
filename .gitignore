@@ -1,0 +1,22 @@
+# Build output and caches
+build/
+.gradle/
+.kotlin/
+.idea/
+*.iml
+build.log
+
+# Machine-specific (SDK path)
+local.properties
+
+# Built by native/build_native.py
+app/src/main/jniLibs/
+
+# Built apps and model files: rebuild or import instead
+*.apk
+*.aab
+*.litertlm
+
+# Signing keys never go in the repo
+*.jks
+*.keystore
