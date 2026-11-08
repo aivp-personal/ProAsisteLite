@@ -32,7 +32,7 @@ class LegalFactsTest {
 
     @Test fun detectsARulingAndItsOwnName() {
         assertTrue(LegalFacts.isRuling(pages))
-        assertEquals("STC Rol 17.292-2026", ruling)
+        assertEquals("STC Rol 17.292", ruling)
         assertFalse(LegalFacts.isRuling(listOf(PageText(1, "DELUXE EGG COOKER Instruction Manual"))))
     }
 
@@ -76,10 +76,27 @@ class LegalFactsTest {
     @Test fun aRulingWithTwoNamesBecomesOneNode() {
         val facts = LegalFacts.mergeRulings(listOf(
             fact(4, "Parte", "Myriam Hortensia Alarcón Castillo", "INVOCA_PRECEDENTE", "Fallo", "STC Rol 9.431-20-INA", "La parte cita el fallo."),
-            fact(8, "Fallo", ruling, "CITA_PRECEDENTE", "Fallo", "STC Rol 9.431", "El Tribunal recoge lo razonado."),
-        ))
-        assertEquals(listOf("STC Rol 9.431-20-INA", "STC Rol 9.431-20-INA"), facts.map { it.obj })
+            fact(8, "Fallo", ruling, "CITA_PRECEDENTE", "Fallo", "Rol N° 9431", "El Tribunal recoge lo razonado."),
+        ), LegalFacts.Court.TC)
+        assertEquals(listOf("STC Rol 9.431", "STC Rol 9.431"), facts.map { it.obj })
         assertEquals(ruling, facts[1].subject)
+    }
+
+    @Test fun rulingKeysCarryTheCourtAndOnlyAYearWhereNumbersRestart() {
+        val tc = LegalFacts.Court.TC
+        assertEquals("TC:9431", LegalFacts.rulingKey("STC Rol 9.431-20-INA", tc))
+        assertEquals("TC:9431", LegalFacts.rulingKey("Rol N° 9431", tc))
+        assertEquals("TC:17292", LegalFacts.rulingKey("Rol 17.292-2026", tc))
+        assertEquals("TC:10044", LegalFacts.rulingKey("STC 10044-21", tc)) // no thousands dot: all five digits count
+        assertEquals("STC Rol 10.044", LegalFacts.canonicalRuling("Rol N° 10044-21-CPR", tc))
+        assertEquals("CS:1234-2020", LegalFacts.rulingKey("Corte Suprema Rol 1234-2020", tc))
+        assertEquals("CS:1234-2021", LegalFacts.rulingKey("SCS Rol 1.234-21", tc)) // not the same ruling as 1234-2020
+        assertEquals("CS:1234", LegalFacts.rulingKey("Rol 1234", LegalFacts.Court.CS)) // no year known: can't be told apart yet
+        assertEquals(null, LegalFacts.rulingKey("Corte Suprema", tc))
+        assertEquals("SCS Rol 1.234-2020", LegalFacts.canonicalRuling("SCS Rol 1234-20", tc))
+        assertEquals("STC Rol 244", LegalFacts.canonicalRuling("STC Roles N° 244", tc))
+        assertEquals(LegalFacts.Court.TC, LegalFacts.courtOf("REPÚBLICA DE CHILE\nTRIBUNAL CONSTITUCIONAL"))
+        assertEquals(LegalFacts.Court.CS, LegalFacts.courtOf("Santiago, veinte de marzo. Corte Suprema. Rol 1234-2020"))
     }
 
     @Test fun theSameLinkInOtherWordsIsOneFact() {

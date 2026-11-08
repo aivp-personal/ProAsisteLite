@@ -80,11 +80,9 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
         val nodes = structure.flatMap { listOf(it.subjectType to it.subject, it.objectType to it.obj) }.distinct().sortedWith(compareBy({ it.first }, { it.second }))
         val second = ask(key, request(LegalFacts.contentPrompt(thisRuling, nodes), LegalFacts.SCHEMA, title, pages))
         onProgress(2, 2)
-        val all = LegalFacts.dedupe(LegalFacts.mergeRulings(structure + second.content?.let { facts(it) }.orEmpty()))
-        // The ruling's own name may have grown in the merge ("17.292-2026" stays the longest here), so check against the merged one.
-        val ownName = all.flatMap { listOf(it.subjectType to it.subject, it.objectType to it.obj) }
-            .firstOrNull { (type, name) -> type == "Fallo" && Regex("\\d[\\d.]*").find(name)?.value == Regex("\\d[\\d.]*").find(thisRuling)?.value }?.second ?: thisRuling
-        val checker = LegalFacts.Checker(pages, ownName)
+        val court = LegalFacts.courtOf(pages.first().text) ?: LegalFacts.Court.TC
+        val all = LegalFacts.dedupe(LegalFacts.mergeRulings(structure + second.content?.let { facts(it) }.orEmpty(), court))
+        val checker = LegalFacts.Checker(pages, thisRuling)
         val verdicts = all.groupBy { checker.check(it) }
         val review = verdicts[LegalFacts.Verdict.REVIEW].orEmpty()
         review.forEach { debugLog("review p${it.page}: ${it.statement}") }

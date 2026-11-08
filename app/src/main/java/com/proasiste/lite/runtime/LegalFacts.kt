@@ -82,25 +82,70 @@ object LegalFacts {
         return f.subjectType in from && f.objectType in to && !(f.subjectType == f.objectType && f.subject == f.obj)
     }
 
+    /**
+     * The courts whose rulings the app knows how to name. [yearly] courts restart their role numbers every year, so
+     * the year is part of a ruling's identity there; the Tribunal Constitucional numbers rulings in one sequence.
+     */
+    enum class Court(val code: String, val prefix: String, val yearly: Boolean, pattern: String) {
+        TC("TC", "STC Rol", false, "tribunal\\s+constitucional|\\bSTC\\b"),
+        CS("CS", "SCS Rol", true, "corte\\s+suprema|\\bSCS\\b"),
+        CA("CA", "Corte de Apelaciones Rol", true, "corte\\s+de\\s+apelaciones"),
+        TER("TER", "Tribunal Electoral Regional Rol", true, "tribunal\\s+electoral\\s+regional"),
+        TRICEL("TRICEL", "TRICEL Rol", true, "tribunal\\s+calificador|\\bTRICEL\\b"),
+        OTRO("OTRO", "Rol", true, "juzgado|tribunal");
+
+        val regex = Regex(pattern, RegexOption.IGNORE_CASE)
+    }
+
+    /** The court that issued a document, from its first page: the first court named, taken in the order above. */
+    fun courtOf(firstPage: String): Court? = Court.entries.firstOrNull { it.regex.containsMatchIn(firstPage) }
+
     /** A first page that names a Chilean court and a role number: legal mode applies. */
     fun isRuling(pages: List<DeepSeekFacts.PageText>): Boolean {
         val first = pages.firstOrNull()?.text.orEmpty()
-        return COURT.containsMatchIn(first) && ROLE.containsMatchIn(first)
+        return courtOf(first) != null && ROLE.containsMatchIn(first)
     }
 
-    /** The ruling's own node, "STC Rol 17.292-2026", from the role number on its first page. */
-    fun thisRuling(pages: List<DeepSeekFacts.PageText>, title: String): String =
-        ROLE.find(pages.firstOrNull()?.text.orEmpty())?.let { "STC Rol ${it.groupValues[1]}" } ?: title
+    /** The ruling's own node, in canonical form ("STC Rol 17.292"), from the court and role number on its first page. */
+    fun thisRuling(pages: List<DeepSeekFacts.PageText>, title: String): String {
+        val first = pages.firstOrNull()?.text.orEmpty()
+        val court = courtOf(first) ?: Court.TC
+        return ROLE.find(first)?.let { canonicalRuling(it.value, court) } ?: title
+    }
 
-    private val COURT = Regex("tribunal\\s+constitucional|corte\\s+suprema|corte\\s+de\\s+apelaciones|tribunal\\s+electoral|juzgado", RegexOption.IGNORE_CASE)
-    private val ROLE = Regex("Rol\\s*N?°?\\s*([\\d.]+-\\d+)", RegexOption.IGNORE_CASE)
+    /**
+     * A ruling's identity: `TC:17292` for the Tribunal Constitucional, whose numbers never repeat, and `CS:1234-2020`
+     * for courts that restart numbering each year. [court] is the one the text gives ("SCS", "Corte Suprema") or,
+     * failing that, [default], normally the court of the document being read. Null when [name] holds no role number.
+     */
+    fun rulingKey(name: String, default: Court): String? {
+        val m = ROLE_PARTS.find(name) ?: return null
+        val court = Court.entries.firstOrNull { it != Court.OTRO && it.regex.containsMatchIn(name) } ?: default
+        val number = m.groupValues[1].replace(".", "")
+        val year = m.groupValues[2].takeIf { it.isNotEmpty() }?.let { if (it.length == 2) "20$it" else it }
+        return if (court.yearly && year != null) "${court.code}:$number-$year" else "${court.code}:$number"
+    }
+
+    /** The one name a ruling has in the graph: "STC Rol 9.431", or "SCS Rol 1.234-2020" where the year counts. */
+    fun canonicalRuling(name: String, default: Court): String {
+        val key = rulingKey(name, default) ?: return name
+        val court = Court.entries.first { it.code == key.substringBefore(':') }
+        val rest = key.substringAfter(':')
+        val number = rest.substringBefore('-').reversed().chunked(3).joinToString(".").reversed()
+        return if (rest.contains('-')) "${court.prefix} $number-${rest.substringAfter('-')}" else "${court.prefix} $number"
+    }
+
+    private val ROLE = Regex("Rol\\s*N?°?\\s*([\\d.]+(?:-\\d+)?)", RegexOption.IGNORE_CASE)
+    /** The number and the optional year in a role, however it is written: "17.292-26-INA", "9.431", "1234-2020". */
+    // The dotted form first, else all the digits: "10044" must not be read as "100".
+    private val ROLE_PARTS = Regex("(\\d{1,3}(?:\\.\\d{3})+|\\d+)(?:-(\\d{2}|\\d{4}))?(?![\\d.])")
 
     private fun common(thisRuling: String) = """Tipos de entidad (usa solo estos): ${TYPES.joinToString(", ")}.
 Cada hecho va de "from" a "to". Relaciones (usa solo estas, con el sentido indicado; el tipo a la izquierda de -> es el de from y el de la derecha es el de to):
 ${RELATIONS.entries.joinToString("\n") { "- ${it.key}: ${it.value}" }}
 
 Nombres (cada entidad debe tener siempre exactamente el mismo nombre):
-- Fallo: "STC Rol " seguido del número de rol tal como aparece, por ejemplo "STC Rol 17.292-26" o "STC Rol 244". El fallo que estás leyendo es "$thisRuling".
+- Fallo: "STC Rol " seguido del número de rol sin el año ni el sufijo, con puntos de miles, por ejemplo "STC Rol 17.292" o "STC Rol 244" (el Tribunal Constitucional numera sus fallos en una sola serie). Un fallo de otro tribunal lleva su tribunal y el año: "SCS Rol 1.234-2020". El fallo que estás leyendo es "$thisRuling".
 - Norma: "<cuerpo>, art. <número>" más inciso, número o letra si se indican. Cuerpos: "Constitución", "Ley N° <número>", "CADH" (Convención Americana sobre Derechos Humanos), "PIDCP" (Pacto Internacional de Derechos Civiles y Políticos). Ejemplos: "Ley N° 18.695, art. 60 inc. 8", "Constitución, art. 19 N° 3 inc. 6", "CADH, art. 8". Un nodo por artículo citado. Una ley completa: "Ley N° 19.737". El cuerpo es el que el texto indica para ese artículo: lee con cuidado a qué cuerpo pertenece cada artículo.
 - Ministro, Parte y Abogado: el nombre completo más largo que aparezca en el fallo, sin títulos (sin "señor", "Ministra", "don"). Una sola persona por nombre: si son varias, un hecho para cada una.
 - Tribunal: nombre oficial sin tratamientos ("Tribunal Electoral Regional del Maule", "Tribunal Calificador de Elecciones", "Tribunal Constitucional"). Nunca uses "STC" para el Tribunal: STC es un fallo.
@@ -187,13 +232,19 @@ No repitas hechos de la primera pasada.
             if (!f.complete()) return Verdict.DROPPED
             val stated = numbers(f.statement)
             val inNames = numbers(f.subject) + numbers(f.obj)
-            if (!documentNumbers.containsAll(stated + inNames)) return Verdict.DROPPED
+            // A ruling's number is checked as digits below; other numbers in names and statements must be in the ruling.
+            val rulingNumbers = listOf(subjectType to f.subject, objectType to f.obj).filter { it.first == "Fallo" }.flatMap { numbers(it.second) }.toSet()
+            if (!documentNumbers.containsAll(stated + inNames - rulingNumbers)) return Verdict.DROPPED
             if (!runsTheRightWay(f)) return Verdict.REVIEW
             if (!onPage.containsAll(stated - inNames)) return Verdict.REVIEW
             for ((type, name) in listOf(subjectType to f.subject, objectType to f.obj)) {
                 if (name == thisRuling || type == "Gestion" || type == "Norma") continue
-                val needed = if (type == "Fallo") Regex("\\d[\\d.]*").find(name)?.let { setOf(it.value) }.orEmpty() else numbers(name)
-                if (!onPage.containsAll(needed)) return Verdict.REVIEW
+                if (type == "Fallo") {
+                    val number = rulingKey(name, Court.TC)?.substringAfter(':')?.substringBefore('-') ?: continue
+                    if (!Regex("(?<!\\d)$number(?!\\d)").containsMatchIn(pageText.getValue(f.page).replace(".", ""))) return Verdict.REVIEW
+                    continue
+                }
+                if (!onPage.containsAll(numbers(name))) return Verdict.REVIEW
             }
             for ((type, name) in listOf(subjectType to f.subject, objectType to f.obj)) {
                 if (type == "Norma" && !normaMatches(name, f.page)) return Verdict.REVIEW
@@ -243,13 +294,9 @@ No repitas hechos de la primera pasada.
         }
     }
 
-    /** Makes every ruling with the same main role number one node, under its longest name: "STC Rol 9.431" and "STC Rol 9.431-20-INA". */
-    fun mergeRulings(facts: List<NewFact>): List<NewFact> {
-        fun role(name: String) = Regex("\\d[\\d.]*").find(name)?.value
-        val names = facts.flatMap { listOf(it.subjectType to it.subject, it.objectType to it.obj) }
-            .filter { it.first == "Fallo" }.map { it.second }.distinct()
-        val longest = names.groupBy { role(it) }.mapValues { (_, same) -> same.maxByOrNull { it.length }!! }
-        fun canonical(type: String, name: String) = if (type == "Fallo") longest[role(name)] ?: name else name
+    /** Gives every ruling its one canonical name, so "Rol 9.431", "STC Rol 9.431-20-INA" and "9431" are one node. */
+    fun mergeRulings(facts: List<NewFact>, court: Court): List<NewFact> {
+        fun canonical(type: String, name: String) = if (type == "Fallo") canonicalRuling(name, court) else name
         return facts.map { it.copy(subject = canonical(it.subjectType, it.subject), obj = canonical(it.objectType, it.obj)) }
     }
 
