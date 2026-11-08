@@ -68,6 +68,38 @@ class LegalFactsTest {
 
     @Test fun everyRelationHasADirection() = assertEquals(LegalFacts.RELATIONS.keys, LegalFacts.DIRECTIONS.keys)
 
+    @Test fun aVotesNameAndARolesYearAreNotCheckedAgainstThePage() {
+        val vote = "Disidencia de Mery Romero en STC Rol 17.292"
+        // The vote's name carries the ruling's number, which is on no dissent page; the statement names the ruling with its year.
+        assertEquals(Verdict.KEPT, checker.check(fact(8, "Voto", vote, "RAZONA", "Concepto", "Debido proceso", "La disidencia razona que el requerimiento de fs. 1 debía acogerse.")))
+        assertEquals(Verdict.KEPT, checker.check(fact(9, "Ministro", "Héctor Mery Romero", "INTEGRA", "Fallo", ruling, "Héctor Mery Romero integró el Tribunal que pronunció la sentencia Rol 17.292-26-INA.")))
+        assertEquals("Rol 17.292 y STC Rol 9.431", LegalFacts.withoutRoleYears("Rol 17.292-26-INA y STC Rol 9.431-20"))
+        assertEquals("Disidencia de Mery", DeepSeekFacts.withoutTypePrefix("Voto: Disidencia de Mery", "Voto"))
+        assertEquals("Voto: algo", DeepSeekFacts.withoutTypePrefix("Voto: algo", "Concepto"))
+    }
+
+    @Test fun aProceduralStepIsTheCourtsActOnTheRuling() = runBlocking {
+        val client = DeepSeekFacts { _, body ->
+            if (body.getJSONArray("messages").getJSONObject(0).getString("content").contains("Una primera pasada")) reply(
+                // Written the wrong way round by the model, on a page the test has (9), with no numbers to check.
+                // Two distinct steps (different numbers), so dedupe keeps both.
+                fact(9, "Fallo", ruling, "TRAMITA", "Tribunal", "Tribunal Constitucional", "El requerimiento fue acogido a trámite conforme al artículo 93 de la Constitución."),
+                fact(9, "Fallo", ruling, "TRAMITA", "Fallo", ruling, "El requerimiento fue declarado admisible."),
+            ) else reply(fact(1, "Parte", "Mario Meza Vásquez", "IMPUGNA", "Norma", "Ley N° 18.695, art. 60 inc. 8", "Mario Meza Vásquez impugna el artículo 60 inciso octavo de la Ley N° 18.695."))
+        }
+        val result = client.extract("test-key", "ruling.pdf", pages)
+        val steps = result.facts.filter { it.relation == "TRAMITA" }
+        assertEquals(2, steps.size)
+        assertTrue(steps.all { it.subjectType == "Tribunal" && it.subject == "Tribunal Constitucional" && it.objectType == "Fallo" && it.obj == ruling })
+        assertEquals(0, result.review)
+    }
+
+    @Test fun anArticleWithASubnumberStillMatchesItsBody() {
+        val c = LegalFacts.Checker(listOf(PageText(2, "vulnera el artículo 8.2 letra h) de la Convención Americana sobre Derechos Humanos y el artículo 14.5 del Pacto Internacional de Derechos Civiles y Políticos. Rol 17.292-2026")), ruling)
+        assertEquals(Verdict.KEPT, c.check(fact(2, "Parte", "ICH", "INVOCA_VULNERACION", "Norma", "CADH, art. 8.2 letra h", "Invoca el artículo 8.2 letra h de la Convención Americana.")))
+        assertEquals(Verdict.KEPT, c.check(fact(2, "Parte", "ICH", "INVOCA_VULNERACION", "Norma", "PIDCP, art. 14.5", "Invoca el artículo 14.5 del Pacto.")))
+    }
+
     @Test fun dropsNumbersFoundNowhere() {
         assertEquals(Verdict.DROPPED, checker.check(fact(9, "Fallo", ruling, "FUNDAMENTA_EN", "Norma", "Ley N° 17.997, art. 93 inc. 11", "El Tribunal se apoya en el artículo 93 inciso 11.")))
         assertEquals(Verdict.DROPPED, checker.check(fact(42, "Fallo", ruling, "RESUELVE", "Concepto", "Costas", "No condena en costas.")))
@@ -139,7 +171,7 @@ class LegalFactsTest {
         assertTrue(second.contains("- Parte: Mario Meza Vásquez") && second.contains("- Norma: Ley N° 18.695, art. 60 inc. 8"))
         assertEquals("RELATIONS enforced", "RESUELVE", sent[0].getJSONObject("response_format").getJSONObject("json_schema").getJSONObject("schema")
             .getJSONObject("properties").getJSONObject("facts").getJSONObject("items").getJSONObject("properties").getJSONObject("relation").getJSONArray("enum").getString(0))
-        assertEquals(2, result.facts.size)
+        assertEquals(2, result.facts.count { it.relation != "TIPO" }) // plus the skeleton's TIPO fact from the caption
         assertEquals(1, result.review)
         assertEquals(0.02, result.cost, 1e-9)
     }

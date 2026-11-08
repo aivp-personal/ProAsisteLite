@@ -71,12 +71,22 @@ Survivorship rules, per attribute, so they can be audited and changed here rathe
 
 Status: these rules are applied in the scan and the ruling key; not yet applied uniformly in the app.
 
-### 2. Rule-based skeleton — not started
+### 2. Rule-based skeleton — done (2026-11-08)
 
-Fixed patterns, no AI, on the formulaic parts of a ruling: header (role, date, court, type), signature pages
-(who sat, drafted, dissented, concurred), "SE RESUELVE" (outcome), caption (challenged norms), "Rol N°" mentions
-(cited rulings). This is `plantroom-mvp/graph_experiment/extract.py`, extended and ported into the app. In the P04
-experiment this layer answered all 10 verified questions.
+Fixed patterns, no AI, on the formulaic parts of a ruling (`runtime/RulingSkeleton.kt`): header (role, date, court,
+type, requirente, challenged norms, pending case), the court's considerandos (ordinal words such as "DECIMOCUARTO:"
+mapped to numbers, with their section headings and the rulings each one cites), "SE RESUELVE" (one fact per decided
+point), separate votes (dissents and concurrences with their ministers, sense, author and their own "1°."-numbered
+considerandos, kept apart from the court's), and the signature page (who sat, who drafted). Everything is in Spanish
+and cites its page. Descended from `plantroom-mvp/graph_experiment/extract.py`, which answered all 10 verified P04
+questions.
+
+The skeleton runs before DeepSeek. Its node names are given to the model so it reuses them; an AI fact whose words sit
+in a dissent is re-attached to that Voto; an AI fact naming a ruling or minister the skeleton never saw is held for
+review. Test resources: `app/src/test/resources/rulings/` (two real rulings, one with a four-minister dissent).
+
+On the phone with both test rulings: 232 facts (139 from rules, the rest AI), 135 nodes, no ruling under two names, 15
+nodes shared by both rulings including the seven ministers who sat on both, 16 facts held for review, 7 dropped.
 
 ### 3. AI facts attached to the skeleton — partly done
 
@@ -89,8 +99,10 @@ reviewed import), prompt version and date. Every merge and every survivorship de
 by which rule or by which steward decision, when. The point is reversibility: a bad batch can be removed by its
 provenance, and a wrong merge can be split again. A merge that cannot be traced is one that cannot be undone.
 
-Status: legal mode runs (two passes, fixed types and relations, naming rules). Facts are not yet resolved against a
-master list. Provenance is not stored per fact and merges are not logged; both need a schema migration.
+Status: legal mode runs (two passes, fixed types and relations, naming rules) after the skeleton, and AI facts may
+only name rulings and ministers the skeleton found in the text (norms are not yet checked against a list). Each
+held-back fact logs its reason in debug builds. Provenance is not stored per fact and merges are not logged; both need
+a schema migration.
 
 ### 4. Checks, then review — partly done
 

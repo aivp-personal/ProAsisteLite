@@ -69,11 +69,17 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
             failedParts = results.count { it.third.content == null })
     }
 
-    /** Legal mode: structure first, then content reusing its node names; every fact checked against the ruling. */
+    /**
+     * Legal mode. The rule-based skeleton reads the ruling first ([RulingSkeleton]); then DeepSeek adds structure and
+     * content, told the skeleton's names so it reuses them. AI facts are checked against the ruling, re-attached to a
+     * dissent when their words sit there, and held back when they name a ruling or minister the skeleton never saw.
+     */
     private suspend fun legal(key: String, title: String, pages: List<PageText>, onProgress: (done: Int, total: Int) -> Unit): Result {
         val thisRuling = LegalFacts.thisRuling(pages, title)
+        val skeleton = RulingSkeleton.of(pages, title)
+        debugLog("skeleton: ${skeleton?.facts?.size ?: 0} facts, ${skeleton?.ministers?.size ?: 0} ministers, ${skeleton?.knownRulings?.size ?: 0} rulings")
         onProgress(0, 2)
-        val first = ask(key, request(LegalFacts.structurePrompt(thisRuling), LegalFacts.SCHEMA, title, pages))
+        val first = ask(key, request(LegalFacts.structurePrompt(thisRuling, skeleton?.knownNodes.orEmpty()), LegalFacts.SCHEMA, title, pages))
         // Pass 2 depends on pass 1's names, so nothing can be built without it.
         val structure = facts(first.content ?: error(tr("DeepSeek's reply couldn't be read, twice. Try again.", "La respuesta de DeepSeek no se pudo leer, dos veces. Inténtalo de nuevo.")))
         onProgress(1, 2)
@@ -81,12 +87,43 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
         val second = ask(key, request(LegalFacts.contentPrompt(thisRuling, nodes), LegalFacts.SCHEMA, title, pages))
         onProgress(2, 2)
         val court = LegalFacts.courtOf(pages.first().text) ?: LegalFacts.Court.TC
-        val all = LegalFacts.dedupe(LegalFacts.mergeRulings(structure + second.content?.let { facts(it) }.orEmpty(), court))
+        val merged = LegalFacts.mergeRulings(structure + second.content?.let { facts(it) }.orEmpty(), court)
+        // Reasoning the model credited to the court but whose words sit in a dissent belongs to that vote.
+        val attributed = merged.map { f ->
+            when {
+                // A procedural step is the court's act, not the ruling's: the model often writes the ruling as the actor.
+                f.relation == "TRAMITA" && (f.subjectType == "Fallo" || f.objectType != "Fallo") ->
+                    f.copy(subjectType = "Tribunal", subject = court.tribunal, objectType = "Fallo", obj = thisRuling)
+                skeleton != null && f.subject == thisRuling && f.relation in REATTACHABLE ->
+                    skeleton.voteFor(f.page, f.statement)?.let { f.copy(subjectType = "Voto", subject = it.name) } ?: f
+                else -> f
+            }
+        }
+        val all = LegalFacts.dedupe(attributed)
         val checker = LegalFacts.Checker(pages, thisRuling)
-        val verdicts = all.groupBy { checker.check(it) }
+        val ministers = skeleton?.ministers?.map { RulingSkeleton.fold(it) }.orEmpty()
+        fun known(f: NewFact): Boolean {
+            if (skeleton == null) return true
+            for ((type, name) in listOf(f.subjectType to f.subject, f.objectType to f.obj)) {
+                if (type == "Fallo" && name != thisRuling && name !in skeleton.knownRulings) return false
+                if (type == "Ministro" && ministers.isNotEmpty() && RulingSkeleton.fold(name) !in ministers) return false
+            }
+            return true
+        }
+        val reasons = mutableMapOf<NewFact, String>()
+        val verdicts = all.groupBy { f ->
+            val verdict = checker.check(f)
+            when {
+                verdict == LegalFacts.Verdict.KEPT && !known(f) -> { reasons[f] = "unknown ruling or minister"; LegalFacts.Verdict.REVIEW }
+                verdict == LegalFacts.Verdict.REVIEW -> { reasons[f] = checker.reason(f); verdict }
+                else -> verdict
+            }
+        }
         val review = verdicts[LegalFacts.Verdict.REVIEW].orEmpty()
-        review.forEach { debugLog("review p${it.page}: ${it.statement}") }
-        return Result(verdicts[LegalFacts.Verdict.KEPT].orEmpty(), pages.map { it.page }, verdicts[LegalFacts.Verdict.DROPPED].orEmpty().size,
+        review.forEach { debugLog("review (${reasons[it]}) p${it.page} ${it.subjectType}:${it.subject} -${it.relation}-> ${it.objectType}:${it.obj}: ${it.statement}") }
+        // The skeleton's facts come first and are never checked: they are read by rules from the formulaic text.
+        val kept = skeleton?.facts.orEmpty() + verdicts[LegalFacts.Verdict.KEPT].orEmpty().filter { ai -> skeleton?.facts?.none { it.subject == ai.subject && it.relation == ai.relation && it.obj == ai.obj } ?: true }
+        return Result(kept, pages.map { it.page }, verdicts[LegalFacts.Verdict.DROPPED].orEmpty().size,
             first.cost + second.cost, review = review.size, legal = true, failedParts = if (second.content == null) 1 else 0)
     }
 
@@ -99,6 +136,8 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
         const val LEGAL_MAX_CHARS = 240_000
         private const val TIMEOUT_MS = 600_000
         private const val MAX_TOKENS = 64_000
+        /** Relations whose subject may be moved from the court to a dissent when the fact's words sit in that dissent. */
+        private val REATTACHABLE = setOf("RAZONA", "CALIFICA", "FUNDAMENTA_EN", "CITA_PRECEDENTE")
         private const val MIN_WORDS_TO_CHECK = 3
         private const val MIN_WORDS_ON_PAGE = 0.5
         private const val MAX_RETRIES = 2
@@ -170,10 +209,17 @@ Return JSON only."""
             val items = JSONObject(content.trim().removePrefix("```json").removePrefix("```").removeSuffix("```")).getJSONArray("facts")
             return (0 until items.length()).mapNotNull { i ->
                 items.optJSONObject(i)?.let {
-                    NewFact(it.optInt("page", -1), it.optString("from_type"), it.optString("from"), it.optString("relation"),
-                        it.optString("to_type"), it.optString("to"), it.optString("statement").trim())
+                    val fromType = it.optString("from_type"); val toType = it.optString("to_type")
+                    NewFact(it.optInt("page", -1), fromType, withoutTypePrefix(it.optString("from"), fromType), it.optString("relation"),
+                        toType, withoutTypePrefix(it.optString("to"), toType), it.optString("statement").trim())
                 }
             }
+        }
+
+        /** "Voto: Disidencia de Mery" → "Disidencia de Mery": the model sometimes copies a listing's type label into the name. */
+        fun withoutTypePrefix(name: String, type: String): String {
+            val prefix = "$type:"
+            return if (type.isNotEmpty() && name.startsWith(prefix, ignoreCase = true)) name.substring(prefix.length).trim() else name.trim()
         }
 
         /** The facts in a model reply about [page] that pass the checks, and how many were dropped. The page number is the app's, never the model's. */
