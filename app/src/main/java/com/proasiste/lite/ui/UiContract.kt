@@ -65,8 +65,34 @@ data class UiAnswer(
     val fromGraph: Boolean = false,
 )
 
+/** A graph fact held back by the checks, or a kept one drawn for a spot check, waiting for the steward's decision. */
+data class UiReviewItem(
+    val id: Long,
+    val sourceId: String,
+    val title: String,
+    val page: Int,
+    val fromType: String,
+    val from: String,
+    val relation: String,
+    val toType: String,
+    val to: String,
+    val statement: String,
+    /** Why it was held back, in plain words. "muestra" for a kept fact drawn to measure the error rate. */
+    val reason: String,
+    /** The page where the checks would pass, when the held-back reason was the page. */
+    val suggestedPage: Int? = null,
+    /** Set for a kept fact drawn for a spot check: rejecting removes it from the graph. */
+    val edgeId: Long? = null,
+)
+
+data class UiReview(val items: List<UiReviewItem>, val sample: Boolean = false, val loading: Boolean = false)
+
 data class UiState(
     val buildingId: String = "P01",
+    /** Held-back graph facts waiting for review in this project. */
+    val reviewCount: Int = 0,
+    /** The review screen, when open. */
+    val review: UiReview? = null,
     val projects: List<UiProject> = SAMPLE_PROJECTS,
     val query: String = "",
     val items: List<UiItem> = emptyList(),
@@ -122,6 +148,16 @@ data class UiActions(
     val onImportFiles: () -> Unit = {},
     val onImportGraph: () -> Unit = {},
     val onBuildGraph: () -> Unit = {},
+    val onOpenReview: () -> Unit = {},
+    val onCloseReview: () -> Unit = {},
+    val onApproveReview: (UiReviewItem) -> Unit = {},
+    /** Approves the item as edited: page, names, types or relation changed by the steward. */
+    val onCorrectReview: (UiReviewItem) -> Unit = {},
+    val onRejectReview: (UiReviewItem) -> Unit = {},
+    /** Draws kept AI facts at random, to measure what the checks let through. */
+    val onSampleReview: () -> Unit = {},
+    /** Opens the document at the item's page. */
+    val onOpenReviewPage: (UiReviewItem) -> Unit = {},
     val onImageSearch: () -> Unit = {},
     val onRecordAudio: () -> Unit = {},
     val onOpenSource: (UiItem) -> Unit = {},

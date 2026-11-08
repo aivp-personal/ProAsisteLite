@@ -14,7 +14,9 @@ data class GraphNode(val id: Long, val type: String, val key: String, val name: 
 data class GraphEdge(val from: GraphNode, val to: GraphNode, val type: String, val sourceId: String, val page: Int, val fact: String = "")
 
 /** A fact to add: a link between two named nodes, the sentence it states, and the page it comes from. */
-data class NewFact(val page: Int, val subjectType: String, val subject: String, val relation: String, val objectType: String, val obj: String, val statement: String) {
+data class NewFact(val page: Int, val subjectType: String, val subject: String, val relation: String, val objectType: String, val obj: String, val statement: String,
+                   /** Who wrote the fact: "reglas", "deepseek/<model>@<prompt version>", "revisado", or "" for an import. */
+                   val extractor: String = "") {
     fun complete() = page >= 1 && listOf(subjectType, subject, relation, objectType, obj, statement).all { it.isNotBlank() } && statement.length <= 600
 }
 
@@ -51,7 +53,7 @@ class Graph(private val store: Store) {
      * Links [from] to [to], citing [sourceId] at [page]. Both nodes and the source must belong to [project].
      * Returns false when this exact link was already recorded.
      */
-    fun addEdge(project: String, from: GraphNode, to: GraphNode, type: String, sourceId: String, page: Int, fact: String = "", vector: FloatArray? = null): Boolean {
+    fun addEdge(project: String, from: GraphNode, to: GraphNode, type: String, sourceId: String, page: Int, fact: String = "", vector: FloatArray? = null, extractor: String = ""): Boolean {
         val cleanType = type.trim()
         require(cleanType.isNotEmpty()) { "A link needs a type." }
         return db.inTransaction {
@@ -62,7 +64,7 @@ class Graph(private val store: Store) {
             require(sourceOk) { "Source $sourceId is not in project $project." }
             insertWithOnConflict("graph_edges", null, ContentValues().apply {
                 put("from_id", from.id); put("to_id", to.id); put("type", cleanType); put("source", sourceId); put("page", page)
-                put("fact", fact.trim()); vector?.let { put("vector", encode(it)) }
+                put("fact", fact.trim()); put("extractor", extractor); vector?.let { put("vector", encode(it)) }
             }, SQLiteDatabase.CONFLICT_IGNORE) != -1L
         }
     }
@@ -211,13 +213,113 @@ class Graph(private val store: Store) {
         return db.inTransaction {
             execSQL("DELETE FROM graph_edges WHERE source = ? AND fact <> ''", arrayOf(sourceId))
             execSQL("DELETE FROM graph_nodes WHERE building = ? AND NOT EXISTS (SELECT 1 FROM graph_edges e WHERE e.from_id = graph_nodes.id OR e.to_id = graph_nodes.id)", arrayOf(project))
+            // A new extraction supersedes what the old one left to review; decided items stay as the record.
+            execSQL("DELETE FROM graph_review WHERE source = ? AND status = 'pendiente'", arrayOf(sourceId))
             facts.zip(vectors).count { (f, vector) ->
                 val from = upsertNode(project, f.subjectType, f.subject)
                 val to = upsertNode(project, f.objectType, f.obj)
-                addEdge(project, from, to, f.relation, sourceId, f.page, f.statement, vector)
+                addEdge(project, from, to, f.relation, sourceId, f.page, f.statement, vector, f.extractor)
             }
         }
     }
+
+    // ---- Review: facts the checks held back, waiting for the steward ----
+
+    /** A fact waiting for a decision, or a kept fact drawn for a spot check ([edgeId] set, [reason] "muestra"). */
+    data class ReviewItem(val id: Long, val sourceId: String, val fact: NewFact, val reason: String, val status: String, val edgeId: Long? = null)
+
+    /** Queues facts the checks held back, each with its reason. */
+    fun saveReview(project: String, sourceId: String, items: List<Pair<NewFact, String>>, extractor: String) {
+        if (items.isEmpty()) return
+        db.inTransaction {
+            for ((f, reason) in items) insertOrThrow("graph_review", null, ContentValues().apply {
+                put("building", project); put("source", sourceId); put("page", f.page)
+                put("from_type", f.subjectType); put("from_name", f.subject); put("relation", f.relation)
+                put("to_type", f.objectType); put("to_name", f.obj); put("statement", f.statement)
+                put("reason", reason); put("extractor", extractor)
+            })
+        }
+    }
+
+    fun reviewCount(project: String): Int = db.rawQuery("SELECT COUNT(*) FROM graph_review WHERE building = ? AND status = 'pendiente'", arrayOf(project))
+        .use { it.moveToFirst(); it.getInt(0) }
+
+    fun pendingReviews(project: String): List<ReviewItem> = db.rawQuery(
+        "SELECT id, source, page, from_type, from_name, relation, to_type, to_name, statement, reason, extractor FROM graph_review WHERE building = ? AND status = 'pendiente' ORDER BY source, reason, page, id",
+        arrayOf(project),
+    ).use { c ->
+        buildList {
+            while (c.moveToNext()) add(ReviewItem(c.getLong(0), c.getString(1),
+                NewFact(c.getInt(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(8), c.getString(10)), c.getString(9), "pendiente"))
+        }
+    }
+
+    private fun reviewItem(id: Long): ReviewItem? = db.rawQuery(
+        "SELECT id, source, page, from_type, from_name, relation, to_type, to_name, statement, reason, extractor, status FROM graph_review WHERE id = ?", arrayOf(id.toString()),
+    ).use { c -> if (c.moveToFirst()) ReviewItem(c.getLong(0), c.getString(1), NewFact(c.getInt(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(8), c.getString(10)), c.getString(9), c.getString(11)) else null }
+
+    /**
+     * Puts a held-back fact into the graph, as the model wrote it or as corrected, and records the decision.
+     * The fact's extractor becomes "revisado": a steward stood behind it.
+     */
+    fun approveReview(project: String, id: Long, corrected: NewFact?, embed: (String) -> FloatArray): Boolean {
+        val item = reviewItem(id)?.takeIf { it.status == "pendiente" } ?: return false
+        val fact = (corrected ?: item.fact).copy(extractor = "revisado")
+        require(fact.complete()) { "An approved fact needs a page, both names and a statement." }
+        val vector = embed(fact.statement)
+        db.inTransaction {
+            val from = upsertNode(project, fact.subjectType, fact.subject)
+            val to = upsertNode(project, fact.objectType, fact.obj)
+            addEdge(project, from, to, fact.relation, item.sourceId, fact.page, fact.statement, vector, fact.extractor)
+            update("graph_review", ContentValues().apply {
+                put("status", if (corrected == null || corrected == item.fact) "aprobado" else "corregido"); put("decided_at", System.currentTimeMillis())
+                if (corrected != null) { put("page", fact.page); put("from_type", fact.subjectType); put("from_name", fact.subject); put("relation", fact.relation); put("to_type", fact.objectType); put("to_name", fact.obj); put("statement", fact.statement) }
+            }, "id = ?", arrayOf(id.toString()))
+        }
+        return true
+    }
+
+    fun rejectReview(id: Long, note: String = ""): Boolean = db.update("graph_review", ContentValues().apply {
+        put("status", "rechazado"); put("decided_at", System.currentTimeMillis()); put("note", note)
+    }, "id = ? AND status = 'pendiente'", arrayOf(id.toString())) == 1
+
+    /** [n] kept AI facts of [project] drawn at random, to measure what the checks let through. */
+    fun sampleKept(project: String, n: Int): List<ReviewItem> = db.rawQuery(
+        """SELECT e.id, e.source, e.page, f.type, f.name, e.type, t.type, t.name, e.fact, e.extractor FROM graph_edges e
+           JOIN graph_nodes f ON f.id = e.from_id JOIN graph_nodes t ON t.id = e.to_id
+           WHERE f.building = ? AND e.fact <> '' AND e.extractor LIKE 'deepseek%' ORDER BY RANDOM() LIMIT ?""",
+        arrayOf(project, n.toString()),
+    ).use { c ->
+        buildList {
+            while (c.moveToNext()) add(ReviewItem(-c.getLong(0), c.getString(1),
+                NewFact(c.getInt(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(8), c.getString(9)), "muestra", "muestra", edgeId = c.getLong(0)))
+        }
+    }
+
+    /** Removes a kept fact the steward found wrong, and records it so the error rate can be read back. */
+    fun rejectKept(project: String, edgeId: Long, note: String = ""): Boolean {
+        val item = sampleItem(edgeId) ?: return false
+        db.inTransaction {
+            delete("graph_edges", "id = ?", arrayOf(edgeId.toString()))
+            execSQL("DELETE FROM graph_nodes WHERE building = ? AND NOT EXISTS (SELECT 1 FROM graph_edges e WHERE e.from_id = graph_nodes.id OR e.to_id = graph_nodes.id)", arrayOf(project))
+            insertOrThrow("graph_review", null, ContentValues().apply {
+                put("building", project); put("source", item.sourceId); put("page", item.fact.page)
+                put("from_type", item.fact.subjectType); put("from_name", item.fact.subject); put("relation", item.fact.relation)
+                put("to_type", item.fact.objectType); put("to_name", item.fact.obj); put("statement", item.fact.statement)
+                put("reason", "muestra"); put("extractor", item.fact.extractor); put("status", "rechazado"); put("decided_at", System.currentTimeMillis()); put("note", note)
+            })
+        }
+        return true
+    }
+
+    private fun sampleItem(edgeId: Long): ReviewItem? = db.rawQuery(
+        """SELECT e.source, e.page, f.type, f.name, e.type, t.type, t.name, e.fact, e.extractor FROM graph_edges e
+           JOIN graph_nodes f ON f.id = e.from_id JOIN graph_nodes t ON t.id = e.to_id WHERE e.id = ?""", arrayOf(edgeId.toString()),
+    ).use { c -> if (c.moveToFirst()) ReviewItem(-edgeId, c.getString(0), NewFact(c.getInt(1), c.getString(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(8)), "muestra", "muestra", edgeId) else null }
+
+    /** Names of a type already in the project graph: entities earlier extractions or approvals established. */
+    fun nodeNames(project: String, type: String): Set<String> = db.rawQuery("SELECT name FROM graph_nodes WHERE building = ? AND type = ?", arrayOf(project, type))
+        .use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
 
     /** How many facts [project]'s graph holds for each source. */
     fun factCounts(project: String): Map<String, Int> = db.rawQuery(

@@ -70,24 +70,24 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
-private val Ink = Color(0xFF0A0A0A)
-private val Steel = Color(0xFF161616)
+internal val Ink = Color(0xFF0A0A0A)
+internal val Steel = Color(0xFF161616)
 private val Raised = Color(0xFF232323)
-private val Line = Color(0xFF2F2F2F)
-private val Mist = Color(0xFFF5F5F5)
-private val Muted = Color(0xFF9B9B9B)
-private val Gold = Color(0xFFCFB382)
-private val Warning = Color(0xFFF28B82)
+internal val Line = Color(0xFF2F2F2F)
+internal val Mist = Color(0xFFF5F5F5)
+internal val Muted = Color(0xFF9B9B9B)
+internal val Gold = Color(0xFFCFB382)
+internal val Warning = Color(0xFFF28B82)
 
 // Brand type from aivalueprospector.com: Open Sauce Sans for interface and headings, Noto Serif for reading text.
-private val OpenSauce = FontFamily(
+internal val OpenSauce = FontFamily(
     Font(R.font.open_sauce_sans_light, FontWeight.Light),
     Font(R.font.open_sauce_sans_regular, FontWeight.Normal),
     Font(R.font.open_sauce_sans_medium, FontWeight.Medium),
     Font(R.font.open_sauce_sans_semibold, FontWeight.SemiBold),
 )
 @OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
-private val NotoSerif = FontFamily(
+internal val NotoSerif = FontFamily(
     Font(R.font.noto_serif, FontWeight.Normal, variationSettings = FontVariation.Settings(FontVariation.weight(400))),
     Font(R.font.noto_serif, FontWeight.Medium, variationSettings = FontVariation.Settings(FontVariation.weight(500))),
 )
@@ -296,6 +296,14 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                     AnswerCard(answer, incognito = state.projects.firstOrNull { it.id == state.buildingId }?.incognito == true,
                         onSource = { inspector = it }, onShare = actions.onShareAnswer)
                 }
+                if (showEvidence && !searching && state.reviewCount > 0) item {
+                    // Graph facts the checks held back wait here for the steward: its own row, not a kind of file.
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).background(Steel, RoundedCornerShape(14.dp))
+                        .clickable(enabled = !locked) { actions.onOpenReview() }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.review-row"), verticalAlignment = Alignment.CenterVertically) {
+                        Text(tr("Graph review · ${state.reviewCount} facts pending", "Revisión del grafo · ${state.reviewCount} datos pendientes"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Glyph("arrow", Gold, Modifier.size(14.dp))
+                    }
+                }
                 if (showEvidence) item {
                     Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 22.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(if (searching) tr("Search results", "Resultados") else tr("Your collection", "Tu colección"), fontSize = 20.sp, fontWeight = FontWeight.Medium, letterSpacing = (-.4).sp)
@@ -432,6 +440,8 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                 confirmButton = { TextButton(onClick = { actions.onConfirmShare(share.text) }, enabled = !share.preparing) { Text(tr("Share", "Compartir")) } },
                 dismissButton = { TextButton(onClick = actions.onDismissShare) { Text(tr("Cancel", "Cancelar")) } })
         }
+
+        state.review?.let { ReviewScreen(it, actions) }
 
         if (capture) ModalBottomSheet(onDismissRequest = { capture = false }, containerColor = Steel) {
             SheetHeader(tr("Add evidence", "Agregar evidencia"), tr("Saved to $buildingName on this phone.", "Se guarda en $buildingName en este teléfono."))

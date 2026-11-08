@@ -14,6 +14,8 @@ import java.text.Normalizer
  * provision or person one node. [Checker] then sorts every fact into kept, held for review, or dropped.
  */
 object LegalFacts {
+    /** Bumped whenever a prompt or a check changes, so facts and review decisions can be read against it. */
+    const val PROMPT_VERSION = "legal-2"
     val TYPES = listOf("Fallo", "Norma", "Tribunal", "Ministro", "Parte", "Abogado", "Gestion", "Concepto", "Voto", "Considerando")
     val RELATIONS = linkedMapOf(
         "RESUELVE" to "Fallo -> Gestion, Norma o Concepto: cada cosa que el fallo decide (acoge, rechaza, declara inadmisible, alza suspensión, costas).",

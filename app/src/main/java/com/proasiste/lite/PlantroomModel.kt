@@ -146,7 +146,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     fun refresh(){
         val sources=store.sources(state.buildingId)
         val candidates = if (state.isSearching) unfilteredSearchItems else sources.map{it.ui(excerpt=if(it.error.isNotBlank())tr("Not indexed: ${it.error}", "Sin indexar: ${it.error}") else "")}
-        state=state.copy(totalCount=sources.size,indexedCount=sources.count{it.indexed},photoCount=sources.count{it.type=="image"},audioCount=sources.count{it.type=="audio"},reportCount=sources.count{it.type=="pdf"},
+        state=state.copy(reviewCount=graph.reviewCount(state.buildingId),totalCount=sources.size,indexedCount=sources.count{it.indexed},photoCount=sources.count{it.type=="image"},audioCount=sources.count{it.type=="audio"},reportCount=sources.count{it.type=="pdf"},
             availableAssetIds=sources.map{it.asset}.distinct().sorted(),items=filterItems(candidates,state.buildingId,state.filters))
     }
     private fun task(label:String,block:suspend()->Unit){
@@ -269,10 +269,11 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         var added=0;var dropped=0;var pages=0;var cost=0.0;var review=0;var legal=0;var failed=0;var kept=0
         for((i,s) in pdfs.withIndex()){
             val texts=withContext(worker){pageTexts(s)}
-            val result=deepSeek.extract(key,s.title,texts){done,total->state=state.copy(status=tr("DeepSeek · ${s.title} · $done of $total parts done", "DeepSeek · ${s.title} · $done de $total partes listas"),progress=(i+done.toFloat()/total.coerceAtLeast(1))/pdfs.size)}
+            val alsoKnown=withContext(worker){graph.nodeNames(project,"Fallo")+graph.nodeNames(project,"Ministro")}
+            val result=deepSeek.extract(key,s.title,texts,alsoKnown){done,total->state=state.copy(status=tr("DeepSeek · ${s.title} · $done of $total parts done", "DeepSeek · ${s.title} · $done de $total partes listas"),progress=(i+done.toFloat()/total.coerceAtLeast(1))/pdfs.size)}
             // A partial result never replaces a complete one: if a part failed and the file has facts, they stay.
             val keepOld=result.failedParts>0&&withContext(worker){graph.factCounts(project)[s.id]?:0}>0
-            if(keepOld)kept++ else added+=withContext(worker){graph.replaceFacts(project,s.id,result.facts){embedder.embedText(it)}}
+            if(keepOld)kept++ else added+=withContext(worker){graph.replaceFacts(project,s.id,result.facts){embedder.embedText(it)}.also{graph.saveReview(project,s.id,result.reviewItems,result.extractor)}}
             failed+=result.failedParts
             dropped+=result.dropped;pages+=result.pagesSent.size;cost+=result.cost;review+=result.review;legal+=if(result.legal)1 else 0
         }
@@ -282,6 +283,47 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     /** A PDF's pages as text for fact extraction: the prose, then each rebuilt table row on its own line. */
     private fun pageTexts(s:Source)=PDDocument.load(File(s.path)).use{doc->(1..doc.numberOfPages).map{p->val read=PdfText.page(doc,p)
         DeepSeekFacts.PageText(p,(listOf(read.prose)+read.tables.flatten()).joinToString("\n").trim())}}
+    // ---- Review of held-back graph facts ----
+    private fun reviewUi(items:List<com.proasiste.lite.graph.Graph.ReviewItem>,suggest:Boolean):List<UiReviewItem>{
+        val titles=store.sources(state.buildingId).associate{it.id to it.title}
+        // Where would the checks pass? Only asked for page reasons, and the ruling's text is read once per document.
+        val checkers=if(!suggest)emptyMap() else items.map{it.sourceId}.distinct().mapNotNull{id->store.sources(state.buildingId).firstOrNull{it.id==id}}.associate{s->
+            val pages=pageTexts(s);s.id to (com.proasiste.lite.runtime.LegalFacts.Checker(pages,com.proasiste.lite.runtime.LegalFacts.thisRuling(pages,s.title)) to pages.map{it.page})}
+        return items.map{r->
+            val suggested=checkers[r.sourceId]?.let{(checker,pages)->if ("page" !in r.reason && "página" !in r.reason) null else pages.firstOrNull{p->p!=r.fact.page&&checker.check(r.fact.copy(page=p))==com.proasiste.lite.runtime.LegalFacts.Verdict.KEPT}}
+            UiReviewItem(r.id,r.sourceId,titles[r.sourceId]?:r.sourceId,r.fact.page,r.fact.subjectType,r.fact.subject,r.fact.relation,r.fact.objectType,r.fact.obj,r.fact.statement,r.reason,suggested,r.edgeId)
+        }
+    }
+    fun openReview(){
+        if(state.busy)return
+        state=state.copy(review=UiReview(emptyList(),loading=true))
+        viewModelScope.launch{
+            val items=withContext(worker){reviewUi(graph.pendingReviews(state.buildingId),suggest=true)}
+            state=state.copy(review=UiReview(items))
+        }
+    }
+    fun closeReview(){state=state.copy(review=null);refresh()}
+    fun sampleReview(){
+        state=state.copy(review=UiReview(emptyList(),sample=true,loading=true))
+        viewModelScope.launch{
+            val items=withContext(worker){reviewUi(graph.sampleKept(state.buildingId,REVIEW_SAMPLE),suggest=false)}
+            state=state.copy(review=UiReview(items,sample=true))
+        }
+    }
+    private fun decide(item:UiReviewItem,block:()->Boolean){
+        viewModelScope.launch{
+            val ok=try{withContext(worker){block()}}catch(e:Exception){state=state.copy(error=e.message?.take(200));false}
+            if(ok)state=state.copy(review=state.review?.let{r->r.copy(items=r.items.filter{it.id!=item.id})})
+        }
+    }
+    fun approveReview(item:UiReviewItem)=decide(item){graph.approveReview(state.buildingId,item.id,null){embedder.embedText(it)}}
+    fun correctReview(item:UiReviewItem)=decide(item){
+        val fact=com.proasiste.lite.graph.NewFact(item.page,item.fromType.trim(),item.from.trim(),item.relation.trim(),item.toType.trim(),item.to.trim(),item.statement.trim())
+        graph.approveReview(state.buildingId,item.id,fact){embedder.embedText(it)}
+    }
+    fun rejectReview(item:UiReviewItem)=decide(item){if(item.edgeId!=null)graph.rejectKept(state.buildingId,item.edgeId) else graph.rejectReview(item.id)}
+    /** The item's document as the viewer shows it, open at the item's page. */
+    fun reviewPageItem(item:UiReviewItem):UiItem?=store.sources(state.buildingId).firstOrNull{it.id==item.sourceId}?.ui(null,item.statement,tr("Page ${item.page}","Página ${item.page}"))
     /** The key to use for the current project, or null when nothing may leave the phone. */
     /** The saved OpenRouter key for the current project, or null when nothing may leave the phone. */
     private fun cloudKey():String?=if(state.projects.firstOrNull{it.id==state.buildingId}?.incognito==true)null else jevVault.load()
@@ -412,6 +454,8 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     companion object {
         /** At most this many graph facts join the passages for one answer. */
         const val GRAPH_FACTS=3
+        /** How many kept AI facts a spot check draws. */
+        const val REVIEW_SAMPLE=10
         /** The most facts a list answer shows. */
         const val LIST_LIMIT=40
         /** Marks a passage that is a graph fact rather than a chunk of the file. */

@@ -100,15 +100,25 @@ by which rule or by which steward decision, when. The point is reversibility: a 
 provenance, and a wrong merge can be split again. A merge that cannot be traced is one that cannot be undone.
 
 Status: legal mode runs (two passes, fixed types and relations, naming rules) after the skeleton, and AI facts may
-only name rulings and ministers the skeleton found in the text (norms are not yet checked against a list). Each
-held-back fact logs its reason in debug builds. Provenance is not stored per fact and merges are not logged; both need
-a schema migration.
+only name rulings and ministers the skeleton found in the text or the project graph already holds (norms are not yet
+checked against a list). Every fact now stores its extractor ("reglas", "deepseek/<model>@<prompt version>",
+"revisado", or "" for an import), and every review decision is kept with its date (schema 3, 2026-11-08). Merges are
+not logged yet.
 
-### 4. Checks, then review — partly done
+### 4. Checks, then review — review screen done (2026-11-08)
 
 Checks in place: numbers on the page, most words on the page, body of law matches the text, relation runs the right
-way, one fact per link. Held-back facts are counted but there is no screen to review them yet. Approving a flagged
-fact should also teach the alias table.
+way, one fact per link, and a fact may only name rulings and ministers the skeleton found or the project graph already
+holds.
+
+Held-back facts are queued in `graph_review` with their reason, extractor and prompt version. The Library shows
+"Revisión del grafo · N datos pendientes" as its own row; the screen groups items by document, shows the fact as the
+model wrote it with its reason in plain words, opens the cited page, and offers Aprobar, Corregir página (the page
+where the checks would pass is proposed), Editar (names, types, relation, page) and Rechazar. Approved facts enter the
+graph with extractor "revisado"; decisions stay as the record and a new extraction replaces only pending items.
+"Muestra" draws ten kept AI facts at random so the errors that got through can be counted; rejecting one removes it
+and records it. Not yet: approving a Norma body mismatch should add the alias to a table (aliases are still read from
+the text), and "apply to all" for a repeated reason.
 
 ### 5. Measure before scaling — not started
 

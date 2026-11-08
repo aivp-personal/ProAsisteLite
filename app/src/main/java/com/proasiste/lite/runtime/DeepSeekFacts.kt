@@ -29,8 +29,12 @@ import java.text.Normalizer
  */
 class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) -> JSONObject = ::post) {
     class PageText(val page: Int, val text: String)
-    /** [review] facts were held back by legal mode's checks; [legal] says which mode ran; [failedParts] replies stayed unreadable after a retry. */
-    class Result(val facts: List<NewFact>, val pagesSent: List<Int>, val dropped: Int, val cost: Double, val review: Int = 0, val legal: Boolean = false, val failedParts: Int = 0)
+    /** [reviewItems] are facts the checks held back, each with its reason; [legal] says which mode ran; [failedParts] replies stayed unreadable after a retry. */
+    class Result(val facts: List<NewFact>, val pagesSent: List<Int>, val dropped: Int, val cost: Double, val reviewItems: List<Pair<NewFact, String>> = emptyList(), val legal: Boolean = false, val failedParts: Int = 0) {
+        val review: Int get() = reviewItems.size
+        /** What wrote the AI facts of this result, for provenance. */
+        val extractor: String get() = "$MODEL@" + if (legal) LegalFacts.PROMPT_VERSION else GENERAL_PROMPT_VERSION
+    }
     private class Reply(val content: String?, val cost: Double)
 
     /** Sends a request, asking once more if the reply is cut off or isn't readable JSON. Network and account errors still throw. */
@@ -47,9 +51,10 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
         return Reply(null, spent)
     }
 
-    suspend fun extract(key: String, title: String, pages: List<PageText>, onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }): Result {
+    /** [alsoKnown] are rulings and ministers the project graph already holds: an AI fact may name them without being held back. */
+    suspend fun extract(key: String, title: String, pages: List<PageText>, alsoKnown: Set<String> = emptySet(), onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }): Result {
         val readable = pages.filter { it.text.isNotBlank() }
-        if (LegalFacts.isRuling(readable) && readable.sumOf { it.text.length } <= LEGAL_MAX_CHARS) return legal(key, title, readable, onProgress)
+        if (LegalFacts.isRuling(readable) && readable.sumOf { it.text.length } <= LEGAL_MAX_CHARS) return legal(key, title, readable, alsoKnown, onProgress)
         val done = AtomicInteger()
         onProgress(0, readable.size)
         val slots = Semaphore(PARALLEL)
@@ -58,7 +63,8 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
                 async {
                     slots.withPermit {
                         val reply = ask(key, request(INSTRUCTIONS, SCHEMA, title, listOf(page)))
-                        val (kept, rejected) = reply.content?.let { parse(it, page) } ?: (emptyList<NewFact>() to 0)
+                        val general = "$MODEL@$GENERAL_PROMPT_VERSION"
+                        val (kept, rejected) = reply.content?.let { parse(it, page) }?.let { (k, r) -> k.map { f -> f.copy(extractor = general) } to r } ?: (emptyList<NewFact>() to 0)
                         onProgress(done.incrementAndGet(), readable.size)
                         Triple(kept, rejected, reply)
                     }
@@ -74,7 +80,7 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
      * content, told the skeleton's names so it reuses them. AI facts are checked against the ruling, re-attached to a
      * dissent when their words sit there, and held back when they name a ruling or minister the skeleton never saw.
      */
-    private suspend fun legal(key: String, title: String, pages: List<PageText>, onProgress: (done: Int, total: Int) -> Unit): Result {
+    private suspend fun legal(key: String, title: String, pages: List<PageText>, alsoKnown: Set<String>, onProgress: (done: Int, total: Int) -> Unit): Result {
         val thisRuling = LegalFacts.thisRuling(pages, title)
         val skeleton = RulingSkeleton.of(pages, title)
         debugLog("skeleton: ${skeleton?.facts?.size ?: 0} facts, ${skeleton?.ministers?.size ?: 0} ministers, ${skeleton?.knownRulings?.size ?: 0} rulings")
@@ -102,9 +108,11 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
         val all = LegalFacts.dedupe(attributed)
         val checker = LegalFacts.Checker(pages, thisRuling)
         val ministers = skeleton?.ministers?.map { RulingSkeleton.fold(it) }.orEmpty()
+        val alsoKnownFolded = alsoKnown.map { RulingSkeleton.fold(it) }.toSet()
         fun known(f: NewFact): Boolean {
             if (skeleton == null) return true
             for ((type, name) in listOf(f.subjectType to f.subject, f.objectType to f.obj)) {
+                if (RulingSkeleton.fold(name) in alsoKnownFolded) continue
                 if (type == "Fallo" && name != thisRuling && name !in skeleton.knownRulings) return false
                 if (type == "Ministro" && ministers.isNotEmpty() && RulingSkeleton.fold(name) !in ministers) return false
             }
@@ -122,9 +130,11 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
         val review = verdicts[LegalFacts.Verdict.REVIEW].orEmpty()
         review.forEach { debugLog("review (${reasons[it]}) p${it.page} ${it.subjectType}:${it.subject} -${it.relation}-> ${it.objectType}:${it.obj}: ${it.statement}") }
         // The skeleton's facts come first and are never checked: they are read by rules from the formulaic text.
-        val kept = skeleton?.facts.orEmpty() + verdicts[LegalFacts.Verdict.KEPT].orEmpty().filter { ai -> skeleton?.facts?.none { it.subject == ai.subject && it.relation == ai.relation && it.obj == ai.obj } ?: true }
+        val extractor = "$MODEL@${LegalFacts.PROMPT_VERSION}"
+        val kept = skeleton?.facts.orEmpty().map { it.copy(extractor = "reglas") } +
+            verdicts[LegalFacts.Verdict.KEPT].orEmpty().filter { ai -> skeleton?.facts?.none { it.subject == ai.subject && it.relation == ai.relation && it.obj == ai.obj } ?: true }.map { it.copy(extractor = extractor) }
         return Result(kept, pages.map { it.page }, verdicts[LegalFacts.Verdict.DROPPED].orEmpty().size,
-            first.cost + second.cost, review = review.size, legal = true, failedParts = if (second.content == null) 1 else 0)
+            first.cost + second.cost, reviewItems = review.map { it to (reasons[it] ?: "") }, legal = true, failedParts = if (second.content == null) 1 else 0)
     }
 
     companion object {
@@ -136,6 +146,8 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
         const val LEGAL_MAX_CHARS = 240_000
         private const val TIMEOUT_MS = 600_000
         private const val MAX_TOKENS = 64_000
+        /** Bumped whenever the general prompt or its checks change. */
+        const val GENERAL_PROMPT_VERSION = "general-2"
         /** Relations whose subject may be moved from the court to a dissent when the fact's words sit in that dissent. */
         private val REATTACHABLE = setOf("RAZONA", "CALIFICA", "FUNDAMENTA_EN", "CITA_PRECEDENTE")
         private const val MIN_WORDS_TO_CHECK = 3

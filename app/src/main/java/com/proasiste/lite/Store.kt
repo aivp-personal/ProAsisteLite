@@ -137,7 +137,7 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
     /** Remove a project's sources, their search index, graph and the app's private copies of their files. Returns the source count. */
     fun deleteProject(project:String):Int{
         val doomed=sources(project)
-        writableDatabase.inTransaction{delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
+        writableDatabase.inTransaction{delete("graph_review","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
         indexChanged()
         doomed.forEach{deleteCopy(it.path)}
         return doomed.size
@@ -224,6 +224,12 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
                 "CREATE INDEX graph_edges_from ON graph_edges(from_id,type)",
                 "CREATE INDEX graph_edges_to ON graph_edges(to_id,type)",
                 "CREATE INDEX graph_edges_source ON graph_edges(source)",
+            ),
+            // 3: provenance on each fact (which extractor wrote it), and the review queue for facts the checks held back.
+            listOf(
+                "ALTER TABLE graph_edges ADD COLUMN extractor TEXT NOT NULL DEFAULT ''",
+                "CREATE TABLE graph_review(id INTEGER PRIMARY KEY,building TEXT NOT NULL,source TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,page INTEGER NOT NULL,from_type TEXT NOT NULL,from_name TEXT NOT NULL,relation TEXT NOT NULL,to_type TEXT NOT NULL,to_name TEXT NOT NULL,statement TEXT NOT NULL,reason TEXT NOT NULL,extractor TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pendiente',decided_at INTEGER,note TEXT)",
+                "CREATE INDEX graph_review_pending ON graph_review(building,status)",
             ),
         )
         private val STOP=setOf("the","and","for","are","how","what","when","where","which","who","why","does","do","did","can","you","your","with","this","that","from","into","about","have","has","was","were","will","should","there","they","them","a","an","of","to","in","on","is","it","be","or","as","at","by","if","i","my","me",
