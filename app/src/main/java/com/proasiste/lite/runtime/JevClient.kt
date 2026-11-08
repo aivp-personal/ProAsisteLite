@@ -129,9 +129,29 @@ class JevClient {
             .flatMap { m -> m.groupValues[1].split(",").mapNotNull { it.trim().toIntOrNull() } }.distinct().toList()
 
         /** Splits an answer into sentences with the passage numbers each one cites. */
+        /**
+         * Splits at a full stop, ! or ? followed by space, except when the next word is lowercase ("3.5 oz. of water")
+         * or the stop ends a known abbreviation ("Art. 19", "Excma. Corte"), so a unit or title never cuts a claim.
+         */
+        fun sentences(text: String): List<String> {
+            val out = mutableListOf<String>()
+            for (piece in text.trim().split(Regex("(?<=[.!?])\\s+(?!\\p{Ll})"))) {
+                val previous = out.lastOrNull()
+                val lastWord = previous?.let { Regex("([\\p{L}°º]+)\\.$").find(it)?.groupValues?.get(1)?.lowercase() }
+                if (previous != null && lastWord != null && lastWord in ABBREVIATIONS) out[out.lastIndex] = "$previous $piece"
+                else out += piece
+            }
+            return out
+        }
+        private val ABBREVIATIONS = setOf(
+            "oz", "min", "mins", "hr", "hrs", "sec", "tbsp", "tsp", "approx", "no", "nos", "vs", "fig", "dept",
+            "art", "arts", "inc", "núm", "num", "n°", "nº", "sr", "sra", "sres", "dr", "dra", "excmo", "excma", "ilmo", "ilma",
+            "sta", "sto", "pág", "págs", "cap", "lit", "ss", "cfr", "vid", "ej",
+        )
+
         fun claims(answer: String): List<Claim> {
             val out = mutableListOf<Claim>()
-            answer.trim().split(Regex("(?<=[.!?])\\s+")).forEach { raw ->
+            sentences(answer).forEach { raw ->
                 var segment = raw
                 // "Sentence. [1]" splits with the citation at the start of the next piece.
                 val leading = LEADING_CITES.find(segment)?.value.orEmpty()

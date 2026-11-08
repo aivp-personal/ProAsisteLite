@@ -438,6 +438,8 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
             ActionRow(tr("Take a photo", "Tomar una foto"), tr("Save a new observation to this project", "Guarda una nueva observación en este proyecto"), "image", enabled = !locked) { capture = false; navigate(true); actions.onCapturePhoto() }
             ActionRow(tr("Import files", "Importar archivos"), tr("Photos, PDF reports and short recordings", "Fotos, informes PDF y grabaciones cortas"), "plus", enabled = !locked) { capture = false; navigate(true); actions.onImportFiles() }
             ActionRow(if (state.recording) tr("Stop & save recording", "Detener y guardar grabación") else tr("Record a voice note", "Grabar una nota de voz"), tr("Capture an observation during your visit", "Registra una observación durante tu visita"), "audio", enabled = !state.busy) { capture = false; navigate(true); actions.onRecordAudio() }
+            ActionRow(tr("Build graph with DeepSeek", "Construir el grafo con DeepSeek"), tr("Sends this project's PDF text to OpenRouter and DeepSeek with your saved key. Never for incognito projects.", "Envía el texto de los PDF de este proyecto a OpenRouter y DeepSeek con tu clave guardada. Nunca en proyectos incógnito."), "library", enabled = !locked && state.jevKeySaved) { capture = false; navigate(true); actions.onBuildGraph() }
+            ActionRow(tr("Import a graph file", "Importar un archivo de grafo"), tr("Facts about a file already in this project", "Datos sobre un archivo que ya está en este proyecto"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportGraph() }
             ActionRow(tr("Import a project pack", "Importar un paquete de proyecto"), tr("Load a prepared collection from local storage", "Carga una colección preparada desde el almacenamiento local"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportCorpus() }
             Spacer(Modifier.height(26.dp))
         }
@@ -583,15 +585,27 @@ private fun JevKeySection(state: UiState, actions: UiActions) {
         Text(tr("OpenRouter key", "Clave de OpenRouter"), fontSize = 20.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(6.dp).background(if (state.jevKeySaved) Gold else Muted, CircleShape)); Spacer(Modifier.width(8.dp))
-            Text(if (state.jevKeySaved) tr("Saved · Jev checks are on", "Guardada · revisión con Jev activada") else tr("Optional · without a key, Jev stays off", "Opcional · sin clave, Jev queda desactivado"), color = if (state.jevKeySaved) Gold else Muted, fontSize = 13.sp)
+            val on = state.jevKeySaved && state.jevEnabled
+            Box(Modifier.size(6.dp).background(if (on) Gold else Muted, CircleShape)); Spacer(Modifier.width(8.dp))
+            Text(when {
+                on -> tr("Saved · Jev checks are on", "Guardada · revisión con Jev activada")
+                state.jevKeySaved -> tr("Saved · Jev checks are off", "Guardada · revisión con Jev desactivada")
+                else -> tr("Optional · without a key, Jev stays off", "Opcional · sin clave, Jev queda desactivado")
+            }, color = if (on) Gold else Muted, fontSize = 13.sp)
         }
         Spacer(Modifier.height(10.dp))
-        Text(tr("Jev judges which passages help answer your question and checks that the answer's citations hold up. With a key saved, each search sends your question, up to ${Store.RERANK_CANDIDATES} passages and the answer's sentences to OpenRouter and TypeSafe. Incognito projects are never sent.",
-            "Jev evalúa qué pasajes ayudan a responder tu pregunta y comprueba que las citas de la respuesta sean correctas. Con una clave guardada, cada búsqueda envía tu pregunta, hasta ${Store.RERANK_CANDIDATES} pasajes y las frases de la respuesta a OpenRouter y TypeSafe. Los proyectos incógnito nunca se envían."),
+        Text(tr("Jev judges which passages help answer your question and checks that the answer's citations hold up. With a key saved and Jev on, each search sends your question, up to ${Store.RERANK_CANDIDATES} passages and the answer's sentences to OpenRouter and TypeSafe. Incognito projects are never sent.",
+            "Jev evalúa qué pasajes ayudan a responder tu pregunta y comprueba que las citas de la respuesta sean correctas. Con una clave guardada y Jev activado, cada búsqueda envía tu pregunta, hasta ${Store.RERANK_CANDIDATES} pasajes y las frases de la respuesta a OpenRouter y TypeSafe. Los proyectos incógnito nunca se envían."),
             color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
         Spacer(Modifier.height(14.dp))
         if (state.jevKeySaved) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(tr("Check answers with Jev", "Revisar respuestas con Jev"), Modifier.weight(1f), fontSize = 13.sp, lineHeight = 18.sp)
+                Spacer(Modifier.width(12.dp))
+                Switch(state.jevEnabled, actions.onJevEnabled, enabled = !state.busy, modifier = Modifier.testTag("plantroom.jev-enabled"))
+            }
+            Text(tr("Off: searches send nothing. The key is still used when you build a graph with DeepSeek.", "Desactivado: las búsquedas no envían nada. La clave se sigue usando al construir un grafo con DeepSeek."), color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
+            Spacer(Modifier.height(14.dp))
             OutlinedButton(onClick = actions.onRemoveJevKey, shape = RoundedCornerShape(12.dp), modifier = Modifier.testTag("plantroom.jev-remove")) { Text(tr("Remove key", "Eliminar clave")) }
         } else {
             OutlinedTextField(value = key, onValueChange = { key = it }, enabled = !state.jevKeyChecking, singleLine = true,
@@ -656,7 +670,7 @@ private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) 
     val cited = JevClient.cites(answer.text).filter { it in 1..answer.sources.size }.sorted()
     Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 6.dp)
         .background(Steel, RoundedCornerShape(14.dp)).padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.answer")) {
-        Eyebrow(tr("Answer · Gemini Nano on this phone", "Respuesta · Gemini Nano en este teléfono"), Gold)
+        Eyebrow(if (answer.fromGraph) tr("Answer · from the project graph", "Respuesta · del grafo del proyecto") else tr("Answer · Gemini Nano on this phone", "Respuesta · Gemini Nano en este teléfono"), Gold)
         Spacer(Modifier.height(9.dp))
         // A flagged answer shows its warning first, so it's read before the sentence it's about.
         val flagged = answer.check?.takeIf { it.issues.isNotEmpty() }
@@ -682,7 +696,7 @@ private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) 
                 }
             }
             Spacer(Modifier.height(6.dp))
-            Text(tr("Written by AI from your files. Check the cited pages.", "Escrito por IA a partir de tus archivos. Revisa las páginas citadas."), fontFamily = NotoSerif, color = Muted, fontSize = 11.sp)
+            Text(if (answer.fromGraph) tr("Listed from the project graph, whose facts were extracted by AI. Check the cited pages.", "Lista del grafo del proyecto, cuyos datos fueron extraídos por IA. Revisa las páginas citadas.") else tr("Written by AI from your files. Check the cited pages.", "Escrito por IA a partir de tus archivos. Revisa las páginas citadas."), fontFamily = NotoSerif, color = Muted, fontSize = 11.sp)
             TextButton(onClick = onShare, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("plantroom.share-answer")) {
                 if (incognito) { Glyph("incognito-on", Gold, Modifier.size(16.dp)); Spacer(Modifier.width(7.dp)) }
                 Text(if (incognito) tr("Share masked", "Compartir enmascarado") else tr("Share", "Compartir"), color = Gold, fontSize = 13.sp)

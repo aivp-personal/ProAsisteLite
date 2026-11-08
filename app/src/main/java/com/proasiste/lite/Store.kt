@@ -215,6 +215,16 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
                 "CREATE INDEX graph_edges_to ON graph_edges(to_id,type)",
                 "CREATE INDEX graph_edges_source ON graph_edges(source)",
             ),
+            // 2: a link can carry the fact it states, in plain words, with that sentence's embedding for search.
+            listOf(
+                "CREATE TABLE graph_edges_v2(id INTEGER PRIMARY KEY,from_id INTEGER NOT NULL REFERENCES graph_nodes(id) ON DELETE CASCADE,to_id INTEGER NOT NULL REFERENCES graph_nodes(id) ON DELETE CASCADE,type TEXT NOT NULL,source TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,page INTEGER NOT NULL,fact TEXT NOT NULL DEFAULT '',vector BLOB,UNIQUE(from_id,to_id,type,source,page,fact))",
+                "INSERT INTO graph_edges_v2(id,from_id,to_id,type,source,page) SELECT id,from_id,to_id,type,source,page FROM graph_edges",
+                "DROP TABLE graph_edges",
+                "ALTER TABLE graph_edges_v2 RENAME TO graph_edges",
+                "CREATE INDEX graph_edges_from ON graph_edges(from_id,type)",
+                "CREATE INDEX graph_edges_to ON graph_edges(to_id,type)",
+                "CREATE INDEX graph_edges_source ON graph_edges(source)",
+            ),
         )
         private val STOP=setOf("the","and","for","are","how","what","when","where","which","who","why","does","do","did","can","you","your","with","this","that","from","into","about","have","has","was","were","will","should","there","they","them","a","an","of","to","in","on","is","it","be","or","as","at","by","if","i","my","me",
             "el","la","los","las","un","una","unos","unas","de","del","que","y","en","por","para","con","como","cual","cuando","donde","es","son","se","su","sus","al","lo","le","les","mi","yo","no","si","o")

@@ -7,7 +7,10 @@ Built on the Plantroom members starter app from The AI Automators. A native Andr
 - Search holds only vectors in compact arrays and reads word counts from a stored word index, so large projects fit in the app's memory.
 - The database schema moves forward through numbered migrations.
 - A file already in a project is not imported twice.
-- `graph/Graph.kt` stores nodes and links per project. Types are plain text, so any schema fits, and every link names the source and page it came from. Multi-step questions run as recursive SQL queries with a step limit and loop protection. Deleting a file removes its links. Nothing fills the graph yet.
+- `graph/Graph.kt` stores nodes and links per project. Types are plain text, so any schema fits, and every link names the source and page it came from. Multi-step questions run as recursive SQL queries with a step limit and loop protection. Deleting a file removes its links.
+- Add evidence offers two ways to fill the graph: Build graph with DeepSeek, or Import a graph file. A court ruling is detected and read in legal mode: two passes, fixed types and relations, and stricter checks that hold doubtful facts back. Up to 3 matching facts join the passages for an answer, cited as graph facts.
+- A question asking for a list (which rulings were cited, which justices sat, what was decided) is answered directly from the graph, with no model writing it.
+- Jev has its own switch in settings, off by default.
 - Cloud table reading is removed. Tables found on the phone are still indexed row by row.
 
 ## Install the included app
@@ -38,7 +41,7 @@ The sample source files are in `sample-data`. App behaviour and screens are in `
 
 ## Costs, privacy and limits
 
-There are no inference API fees and no account is needed. Internet is used on your computer for the model and build downloads. Search and answers run on the phone. The one exception is optional: if you save an OpenRouter key in settings, Jev reranks passages and checks citations in the cloud, which sends your question, passages and the answer's sentences to OpenRouter and TypeSafe. Without a key, and always in incognito projects, the app makes no such calls. The model, source files and index stay in app-private storage; uninstalling deletes them. The keyboard's speech-to-text feature is separate from this app and its offline availability depends on your keyboard and downloaded language packs.
+There are no inference API fees and no account is needed. Internet is used on your computer for the model and build downloads. Search and answers run on the phone. The one exception is optional: if you save an OpenRouter key in settings and turn Jev on, Jev reranks passages and checks citations in the cloud, which sends your question, passages and the answer's sentences to OpenRouter and TypeSafe. With a saved key, Build graph with DeepSeek in Add evidence sends the text of the project's indexed PDFs to OpenRouter and DeepSeek, and keeps only facts that pass checks against the cited page; the status line shows how many pages were sent and what it cost. Without a key, and always in incognito projects, the app makes no such calls. The model, source files and index stay in app-private storage; uninstalling deletes them. The keyboard's speech-to-text feature is separate from this app and its offline availability depends on your keyboard and downloaded language packs.
 
 Search quality and speed vary with the device and files. This is a starter project, not a production maintenance or diagnostic system. Similarity is not a diagnosis or an asset identity. PDFs must contain selectable text, with a 1,000-page/100 MB limit; scanned PDFs need OCR elsewhere. Audio imports are limited to 60 seconds/50 MB; in-app recordings stop at 55 seconds. External building packs allow up to 500 records/600 MB uncompressed. Leave the app open while indexing.
 

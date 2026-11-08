@@ -61,6 +61,8 @@ data class UiAnswer(
     val jevNote: String = "",
     val jevFailed: Boolean = false,
     val check: UiCitationCheck? = null,
+    /** Listed directly from the project graph, with no model writing it. */
+    val fromGraph: Boolean = false,
 )
 
 data class UiState(
@@ -89,6 +91,8 @@ data class UiState(
     val answer: UiAnswer? = null,
     val share: UiShare? = null,
     val jevKeySaved: Boolean = false,
+    /** Jev reranks and checks answers only when this is on, even with a key saved. */
+    val jevEnabled: Boolean = false,
     val jevKeyChecking: Boolean = false,
     val jevKeyError: String? = null,
 )
@@ -110,11 +114,14 @@ data class UiActions(
     /** Checks the OpenRouter key with OpenRouter, then stores it encrypted. */
     val onSaveJevKey: (String) -> Unit = {},
     val onRemoveJevKey: () -> Unit = {},
+    val onJevEnabled: (Boolean) -> Unit = {},
     val onQuery: (String) -> Unit = {},
     val onSearch: () -> Unit = {},
     val onImportModel: () -> Unit = {},
     val onImportCorpus: () -> Unit = {},
     val onImportFiles: () -> Unit = {},
+    val onImportGraph: () -> Unit = {},
+    val onBuildGraph: () -> Unit = {},
     val onImageSearch: () -> Unit = {},
     val onRecordAudio: () -> Unit = {},
     val onOpenSource: (UiItem) -> Unit = {},

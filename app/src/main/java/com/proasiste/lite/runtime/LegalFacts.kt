@@ -1,0 +1,274 @@
+package com.proasiste.lite.runtime
+
+import com.proasiste.lite.graph.NewFact
+import org.json.JSONArray
+import org.json.JSONObject
+import java.text.Normalizer
+
+/**
+ * Legal mode for graph building: prompts, schema and checks for a Chilean court ruling.
+ *
+ * Two passes over the whole ruling: the first records structure (parties, provisions, citations, who decided), the
+ * second the content (each part of the decision, dates, procedure, routes of appeal, the court's reasoning), reusing
+ * the first pass's node names. Types and relations are fixed by the schema, and naming rules make each ruling,
+ * provision or person one node. [Checker] then sorts every fact into kept, held for review, or dropped.
+ */
+object LegalFacts {
+    val TYPES = listOf("Fallo", "Norma", "Tribunal", "Ministro", "Parte", "Abogado", "Gestion", "Concepto")
+    val RELATIONS = linkedMapOf(
+        "RESUELVE" to "Fallo -> Gestion, Norma o Concepto: cada cosa que el fallo decide (acoge, rechaza, declara inadmisible, alza suspensión, costas).",
+        "IMPUGNA" to "Parte -> Norma: la norma cuya aplicación la parte impugna.",
+        "INVOCA_VULNERACION" to "Parte -> Norma: norma constitucional o tratado que la parte dice vulnerado.",
+        "INVOCA_PRECEDENTE" to "Parte -> Fallo: fallo que una parte cita en su favor.",
+        "CITA_PRECEDENTE" to "Fallo -> Fallo: fallo anterior que el propio Tribunal cita, sigue o en el que se apoya.",
+        "FUNDAMENTA_EN" to "Fallo -> Norma: norma en la que el Tribunal apoya su razonamiento o su decisión.",
+        "CALIFICA" to "Fallo -> Norma o Concepto: cómo el Tribunal caracteriza una norma o institución (por ejemplo, que no es sanción).",
+        "RAZONA" to "Fallo -> Concepto: un argumento central del Tribunal para decidir.",
+        "DISPONE" to "Norma -> Concepto: lo que una norma establece.",
+        "INCORPORADA_POR" to "Norma -> Norma: ley que introdujo o modificó la norma.",
+        "CONTROLA" to "Fallo -> Norma: control preventivo o represivo de una norma en ese fallo.",
+        "REQUIERE_EN" to "Parte -> Gestion: la parte requirente y la gestión pendiente en que incide el requerimiento.",
+        "SOLICITA" to "Parte -> Concepto: lo que una parte pide expresamente (en la gestión o ante el Tribunal).",
+        "SEGUIDA_ANTE" to "Gestion -> Tribunal: tribunal donde se sigue la gestión.",
+        "IMPUGNABLE_ANTE" to "Gestion -> Tribunal: tribunal ante el cual puede recurrirse lo que se resuelva en la gestión.",
+        "DEDUCIDA_POR" to "Gestion -> Parte: quien inició la gestión.",
+        "DIRIGIDA_CONTRA" to "Gestion -> Parte: contra quien se dirige la gestión.",
+        "INTEGRA" to "Ministro -> Fallo: ministro que integró la sala o el pleno.",
+        "REDACTA" to "Ministro -> Fallo: ministro redactor de la sentencia.",
+        "DISIENTE" to "Ministro -> Fallo: ministro que vota en contra (disidencia).",
+        "PREVIENE" to "Ministro -> Fallo: ministro que concurre con prevención.",
+        "ALEGA" to "Abogado -> Parte: abogado que alegó por una parte.",
+        "TRAMITA" to "Tribunal -> Fallo: un paso de tramitación con su fecha y fojas (admisión a trámite, admisibilidad, autos en relación, vista de la causa, acuerdo, sentencia).",
+    )
+
+    private val FALLO = setOf("Fallo")
+    private val NORMA_TYPE = setOf("Norma")
+    private val PARTE = setOf("Parte")
+    private val CONCEPTO = setOf("Concepto")
+    private val MINISTRO = setOf("Ministro")
+    private val GESTION = setOf("Gestion")
+    private val TRIBUNAL = setOf("Tribunal")
+
+    /** The direction each relation must run, as described in [RELATIONS]: the types allowed at its start and end. */
+    val DIRECTIONS: Map<String, Pair<Set<String>, Set<String>>> = mapOf(
+        "RESUELVE" to (FALLO to setOf("Gestion", "Norma", "Concepto")),
+        "IMPUGNA" to (PARTE to NORMA_TYPE),
+        "INVOCA_VULNERACION" to (PARTE to NORMA_TYPE),
+        "INVOCA_PRECEDENTE" to (PARTE to FALLO),
+        "CITA_PRECEDENTE" to (FALLO to FALLO),
+        "FUNDAMENTA_EN" to (FALLO to NORMA_TYPE),
+        "CALIFICA" to (FALLO to setOf("Norma", "Concepto")),
+        "RAZONA" to (FALLO to CONCEPTO),
+        "DISPONE" to (NORMA_TYPE to CONCEPTO),
+        "INCORPORADA_POR" to (NORMA_TYPE to NORMA_TYPE),
+        "CONTROLA" to (FALLO to NORMA_TYPE),
+        "REQUIERE_EN" to (PARTE to GESTION),
+        "SOLICITA" to (PARTE to CONCEPTO),
+        "SEGUIDA_ANTE" to (GESTION to TRIBUNAL),
+        "IMPUGNABLE_ANTE" to (GESTION to TRIBUNAL),
+        "DEDUCIDA_POR" to (GESTION to PARTE),
+        "DIRIGIDA_CONTRA" to (GESTION to PARTE),
+        "INTEGRA" to (MINISTRO to FALLO),
+        "REDACTA" to (MINISTRO to FALLO),
+        "DISIENTE" to (MINISTRO to FALLO),
+        "PREVIENE" to (MINISTRO to FALLO),
+        "ALEGA" to (setOf("Abogado") to PARTE),
+        "TRAMITA" to (TRIBUNAL to FALLO),
+    )
+
+    /** True when the fact runs the way its relation says and doesn't point at itself. */
+    fun runsTheRightWay(f: NewFact): Boolean {
+        val (from, to) = DIRECTIONS[f.relation] ?: return false
+        return f.subjectType in from && f.objectType in to && !(f.subjectType == f.objectType && f.subject == f.obj)
+    }
+
+    /** A first page that names a Chilean court and a role number: legal mode applies. */
+    fun isRuling(pages: List<DeepSeekFacts.PageText>): Boolean {
+        val first = pages.firstOrNull()?.text.orEmpty()
+        return COURT.containsMatchIn(first) && ROLE.containsMatchIn(first)
+    }
+
+    /** The ruling's own node, "STC Rol 17.292-2026", from the role number on its first page. */
+    fun thisRuling(pages: List<DeepSeekFacts.PageText>, title: String): String =
+        ROLE.find(pages.firstOrNull()?.text.orEmpty())?.let { "STC Rol ${it.groupValues[1]}" } ?: title
+
+    private val COURT = Regex("tribunal\\s+constitucional|corte\\s+suprema|corte\\s+de\\s+apelaciones|tribunal\\s+electoral|juzgado", RegexOption.IGNORE_CASE)
+    private val ROLE = Regex("Rol\\s*N?°?\\s*([\\d.]+-\\d+)", RegexOption.IGNORE_CASE)
+
+    private fun common(thisRuling: String) = """Tipos de entidad (usa solo estos): ${TYPES.joinToString(", ")}.
+Cada hecho va de "from" a "to". Relaciones (usa solo estas, con el sentido indicado; el tipo a la izquierda de -> es el de from y el de la derecha es el de to):
+${RELATIONS.entries.joinToString("\n") { "- ${it.key}: ${it.value}" }}
+
+Nombres (cada entidad debe tener siempre exactamente el mismo nombre):
+- Fallo: "STC Rol " seguido del número de rol tal como aparece, por ejemplo "STC Rol 17.292-26" o "STC Rol 244". El fallo que estás leyendo es "$thisRuling".
+- Norma: "<cuerpo>, art. <número>" más inciso, número o letra si se indican. Cuerpos: "Constitución", "Ley N° <número>", "CADH" (Convención Americana sobre Derechos Humanos), "PIDCP" (Pacto Internacional de Derechos Civiles y Políticos). Ejemplos: "Ley N° 18.695, art. 60 inc. 8", "Constitución, art. 19 N° 3 inc. 6", "CADH, art. 8". Un nodo por artículo citado. Una ley completa: "Ley N° 19.737". El cuerpo es el que el texto indica para ese artículo: lee con cuidado a qué cuerpo pertenece cada artículo.
+- Ministro, Parte y Abogado: el nombre completo más largo que aparezca en el fallo, sin títulos (sin "señor", "Ministra", "don"). Una sola persona por nombre: si son varias, un hecho para cada una.
+- Tribunal: nombre oficial sin tratamientos ("Tribunal Electoral Regional del Maule", "Tribunal Calificador de Elecciones", "Tribunal Constitucional"). Nunca uses "STC" para el Tribunal: STC es un fallo.
+- Gestion: "Rol <número> ante <tribunal>", por ejemplo "Rol 29-2023 ante Tribunal Electoral Regional del Maule".
+- Concepto: una frase nominal breve y precisa, por ejemplo "Suspensión del alcalde (Ley N° 18.695, art. 60 inc. 8)".
+
+Reglas:
+- Usa solo lo que dice el fallo. Nada de conocimiento externo, suposiciones ni inferencias: si el fallo no dice que una parte pidió algo, no lo afirmes.
+- Copia exactamente fechas, números de rol, artículos, fojas y nombres.
+- "to" es la entidad concreta de la que trata el hecho: la norma impugnada, el fallo citado, el tribunal. El fallo que lees solo va en "to" en INTEGRA, REDACTA, DISIENTE, PREVIENE y TRAMITA.
+- page es el número de página donde el texto dice lo que afirma el hecho, según las marcas de página.
+- No registres citas de doctrina (autores y libros), ni hechos triviales como que el fallo se identifica por su rol.
+Devuelve solo JSON."""
+
+    fun structurePrompt(thisRuling: String) = """Conviertes un fallo judicial chileno en hechos para un grafo de conocimiento.
+Cada hecho une dos entidades con una relación y lo explica en una oración autosuficiente, en español.
+En esta pasada registra la estructura: partes, gestión pendiente, normas impugnadas e invocadas, cada fallo citado
+(indicando si lo cita una parte, INVOCA_PRECEDENTE, o el propio Tribunal, CITA_PRECEDENTE), normas en que se funda
+el Tribunal, cada ministro que integró y quién redactó, disintió o previno.
+
+""" + common(thisRuling)
+
+    fun contentPrompt(thisRuling: String, nodes: List<Pair<String, String>>) = """Conviertes un fallo judicial chileno en hechos para un grafo de conocimiento.
+Cada hecho une dos entidades con una relación y lo explica en una oración autosuficiente, en español.
+Una primera pasada ya registró la estructura. Estas son sus entidades; reutiliza exactamente estos nombres y tipos
+cuando hables de ellas:
+${nodes.joinToString("\n") { "- ${it.first}: ${it.second}" }}
+
+En esta pasada registra solo lo que falta:
+- Cada punto de lo resuelto, por separado (por ejemplo: rechazo o acogida, alzamiento de la suspensión, costas), con RESUELVE.
+- Cada paso de tramitación con su fecha y fojas (TRAMITA), y la fecha de la sentencia.
+- Las fechas del requerimiento y de la gestión, lo que las partes pidieron expresamente (SOLICITA) y ante quién se puede recurrir (IMPUGNABLE_ANTE).
+- Los argumentos centrales del Tribunal para decidir (RAZONA, CALIFICA), cada uno en un hecho.
+No repitas hechos de la primera pasada.
+
+""" + common(thisRuling)
+
+    val SCHEMA: JSONObject get() = JSONObject().put("type", "object").put("additionalProperties", false)
+        .put("required", JSONArray().put("facts"))
+        .put("properties", JSONObject().put("facts", JSONObject().put("type", "array").put("items",
+            JSONObject().put("type", "object").put("additionalProperties", false)
+                // Named so that a provider sorting the keys still has the model write the link's start before its end.
+                .put("required", JSONArray(listOf("from", "from_type", "page", "relation", "statement", "to", "to_type")))
+                .put("properties", JSONObject()
+                    .put("page", JSONObject().put("type", "integer"))
+                    .put("from_type", JSONObject().put("type", "string").put("enum", JSONArray(TYPES)))
+                    .put("from", JSONObject().put("type", "string"))
+                    .put("relation", JSONObject().put("type", "string").put("enum", JSONArray(RELATIONS.keys.toList())))
+                    .put("to_type", JSONObject().put("type", "string").put("enum", JSONArray(TYPES)))
+                    .put("to", JSONObject().put("type", "string"))
+                    .put("statement", JSONObject().put("type", "string"))))))
+
+    enum class Verdict { KEPT, REVIEW, DROPPED }
+
+    /**
+     * Checks facts against the ruling's text:
+     * - every number in a statement or node name must appear somewhere in the ruling, or the fact is dropped;
+     * - numbers in the statement that aren't part of a node name must be on the cited page;
+     * - node names must be on the cited page too, except the ruling itself and its pending case (every page is
+     *   about them); a ruling needs only its main role number there;
+     * - a Norma named "<body>, art. N" must match the text: on that page, the body named for "artículo N" is that body.
+     * - it must run the way its relation says ([runsTheRightWay]).
+     * Failing any of the last four holds the fact for review instead of keeping it.
+     */
+    class Checker(pages: List<DeepSeekFacts.PageText>, private val thisRuling: String) {
+        private val pageText = pages.associate { it.page to fold(it.text) }
+        private val aliases: Map<String, String>
+        private val bodies: List<Pair<Regex, (MatchResult) -> String>>
+        private val pageNumbers: Map<Int, Set<String>>
+        private val documentNumbers: Set<String>
+
+        init {
+            val whole = pageText.values.joinToString(" ")
+            aliases = ALIAS.findAll(whole).associate { it.groupValues[2].replace(Regex("\\s+"), " ").trim() to it.groupValues[1] }
+            bodies = BASE_BODIES + aliases.map { (name, number) -> Regex("Ley\\s+" + words(name), RegexOption.IGNORE_CASE) to { _: MatchResult -> "Ley N° $number" } }
+            pageNumbers = pageText.mapValues { (_, text) ->
+                withYears(numbers(text)) + aliases.filter { (name, _) -> Regex("Ley\\s+" + words(name), RegexOption.IGNORE_CASE).containsMatchIn(text) }.values
+            }
+            documentNumbers = pageNumbers.values.flatten().toSet()
+        }
+
+        fun check(f: NewFact, subjectType: String = f.subjectType, objectType: String = f.objectType): Verdict {
+            val onPage = pageNumbers[f.page] ?: return Verdict.DROPPED
+            if (!f.complete()) return Verdict.DROPPED
+            val stated = numbers(f.statement)
+            val inNames = numbers(f.subject) + numbers(f.obj)
+            if (!documentNumbers.containsAll(stated + inNames)) return Verdict.DROPPED
+            if (!runsTheRightWay(f)) return Verdict.REVIEW
+            if (!onPage.containsAll(stated - inNames)) return Verdict.REVIEW
+            for ((type, name) in listOf(subjectType to f.subject, objectType to f.obj)) {
+                if (name == thisRuling || type == "Gestion" || type == "Norma") continue
+                val needed = if (type == "Fallo") Regex("\\d[\\d.]*").find(name)?.let { setOf(it.value) }.orEmpty() else numbers(name)
+                if (!onPage.containsAll(needed)) return Verdict.REVIEW
+            }
+            for ((type, name) in listOf(subjectType to f.subject, objectType to f.obj)) {
+                if (type == "Norma" && !normaMatches(name, f.page)) return Verdict.REVIEW
+            }
+            return Verdict.KEPT
+        }
+
+        private fun normaMatches(name: String, page: Int): Boolean {
+            val m = NORMA.find(name) ?: return true // A whole law or another kind of name: the number checks cover it.
+            val (body, article) = m.destructured
+            val text = pageText[page] ?: return false
+            val places = Regex("(?<![\\d.])${Regex.escape(article)}(?![\\d.])").findAll(text)
+                .filter { Regex("art[íi.]", RegexOption.IGNORE_CASE).containsMatchIn(text.substring(maxOf(0, it.range.first - 80), it.range.first)) }
+                .map { it.range.last + 1 }
+            return places.any { bodyOf(text, it) == body }
+        }
+
+        /** The body an article mentioned just before [at] belongs to: the first named after it, or the last named before
+         * it when the text says "del mismo cuerpo" or names none after. */
+        private fun bodyOf(text: String, at: Int): String? {
+            val after = bodiesIn(text.substring(at, minOf(text.length, at + 300)))
+            val before = bodiesIn(text.substring(maxOf(0, at - 600), at))
+            return if (SAME_BODY.containsMatchIn(text.substring(at, minOf(text.length, at + 120))) || after.isEmpty()) before.lastOrNull()?.second
+            else after.first().second
+        }
+
+        private fun bodiesIn(text: String) =
+            bodies.flatMap { (pattern, make) -> pattern.findAll(text).map { it.range.first to make(it) }.toList() }.sortedBy { it.first }
+    }
+
+    /** Relations where a link is one fact however it's worded: who integrated, who cited what. */
+    private val ONE_PER_LINK = setOf(
+        "INTEGRA", "REDACTA", "DISIENTE", "PREVIENE", "ALEGA", "IMPUGNA", "INVOCA_VULNERACION", "INVOCA_PRECEDENTE",
+        "CITA_PRECEDENTE", "FUNDAMENTA_EN", "SEGUIDA_ANTE", "IMPUGNABLE_ANTE", "DEDUCIDA_POR", "DIRIGIDA_CONTRA",
+    )
+
+    /**
+     * A second pass often repeats the first in other words. One fact per link for [ONE_PER_LINK]; per link, page and
+     * numbers for the rest, so each dated step stays; and reasoning is kept whole, since several distinct arguments
+     * can link the same two nodes.
+     */
+    fun dedupe(facts: List<NewFact>): List<NewFact> = facts.distinctBy {
+        when (it.relation) {
+            "RAZONA", "CALIFICA" -> listOf(it.subject, it.relation, it.obj, it.statement)
+            in ONE_PER_LINK -> listOf(it.subject, it.relation, it.obj)
+            else -> listOf(it.subject, it.relation, it.obj, it.page, numbers(it.statement))
+        }
+    }
+
+    /** Makes every ruling with the same main role number one node, under its longest name: "STC Rol 9.431" and "STC Rol 9.431-20-INA". */
+    fun mergeRulings(facts: List<NewFact>): List<NewFact> {
+        fun role(name: String) = Regex("\\d[\\d.]*").find(name)?.value
+        val names = facts.flatMap { listOf(it.subjectType to it.subject, it.objectType to it.obj) }
+            .filter { it.first == "Fallo" }.map { it.second }.distinct()
+        val longest = names.groupBy { role(it) }.mapValues { (_, same) -> same.maxByOrNull { it.length }!! }
+        fun canonical(type: String, name: String) = if (type == "Fallo") longest[role(name)] ?: name else name
+        return facts.map { it.copy(subject = canonical(it.subjectType, it.subject), obj = canonical(it.objectType, it.obj)) }
+    }
+
+    fun numbers(text: String) = DeepSeekFacts.numbers(text)
+
+    /** A two-digit year in a role ("9.431-20") also stands for its four-digit form ("2020"). */
+    fun withYears(found: Set<String>): Set<String> = found + found.filter { it.length == 2 }.flatMap { listOf("19$it", "20$it") }
+
+    private fun fold(text: String) = Normalizer.normalize(text, Normalizer.Form.NFKC)
+    private fun words(name: String) = name.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString("\\s+") { Regex.escape(it) }
+
+    private val ALIAS = Regex("Ley\\s*N°\\s*([\\d.]+),?\\s*(Org[áa]nica\\s+Constitucional\\s+de(?:\\s+[A-ZÁÉÍÓÚ][\\wáéíóúñ]+|\\s+del?|\\s+la|\\s+los)+)")
+    private val NORMA = Regex("^(Constitución|CADH|PIDCP|Ley N° [\\d.]+), art\\. (\\d+)")
+    private val SAME_BODY = Regex("^\\W*(?:\\w+\\W+){0,6}?(?:del\\s+mismo\\s+cuerpo|de\\s+la\\s+misma)", RegexOption.IGNORE_CASE)
+    private val BASE_BODIES: List<Pair<Regex, (MatchResult) -> String>> = listOf(
+        Regex("Constituci[óo]n|Carta\\s+Fundamental", RegexOption.IGNORE_CASE) to { _ -> "Constitución" },
+        Regex("Convenci[óo]n\\s+Americana", RegexOption.IGNORE_CASE) to { _ -> "CADH" },
+        // "Pacto" alone too: a page break can split "Pacto | Internacional".
+        Regex("\\bPacto\\b", RegexOption.IGNORE_CASE) to { _ -> "PIDCP" },
+        Regex("Ley\\s*N°\\s*([\\d.]+)", RegexOption.IGNORE_CASE) to { m -> "Ley N° ${m.groupValues[1]}" },
+    )
+}

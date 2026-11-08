@@ -12,6 +12,7 @@ import com.proasiste.lite.runtime.KeyVault
 import com.proasiste.lite.runtime.NanoAnswerer
 import com.proasiste.lite.runtime.TableRows
 import com.proasiste.lite.runtime.PdfText
+import com.proasiste.lite.runtime.DeepSeekFacts
 import com.proasiste.lite.runtime.Pseudonymizer
 import com.proasiste.lite.ui.*
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
@@ -31,6 +32,8 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     private val appContext=app.applicationContext
     val store=Store(app)
     val embedder=GemmaEmbedder(app)
+    private val graph=com.proasiste.lite.graph.Graph(store)
+    private val deepSeek=com.proasiste.lite.runtime.DeepSeekFacts()
     private val worker=Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     private val cancelIndex=AtomicBoolean(false)
     private val modelFile=File(app.filesDir,"models/${GemmaEmbedder.MODEL_FILENAME}")
@@ -46,7 +49,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         PDFBoxResourceLoader.init(app)
         // First launch follows the phone's language; after that, the user's choice.
         L10n.spanish=prefs.getBoolean("spanish",java.util.Locale.getDefault().language=="es")
-        state=state.copy(projects=loadProjects(),jevKeySaved=jevVault.load()!=null).let{s->s.copy(buildingId=prefs.getString("project",null)?.takeIf{id->s.projects.any{it.id==id}}?:s.projects.first().id)}
+        state=state.copy(projects=loadProjects(),jevKeySaved=jevVault.load()!=null,jevEnabled=prefs.getBoolean("jev-enabled",false)).let{s->s.copy(buildingId=prefs.getString("project",null)?.takeIf{id->s.projects.any{it.id==id}}?:s.projects.first().id)}
         task(tr("Preparing your collection", "Preparando tu colección")){
             withContext(worker){
                 store.ensureIndexVersion()
@@ -98,7 +101,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         val plain=buildString{
             appendLine(tr("Q: ${state.query.trim()}", "P: ${state.query.trim()}"));appendLine();appendLine(answer.text.trim());appendLine()
             appendLine(tr("Sources:", "Fuentes:"));cited.forEach{n->val s=answer.sources[n-1];appendLine("[$n] ${s.title}, ${s.sourceLocation}");appendLine("    \"${s.excerpt.trim()}\"")}
-            appendLine();append(tr("Answer written by Gemini Nano on the phone from the cited passages.", "Respuesta escrita por Gemini Nano en el teléfono a partir de los pasajes citados."))
+            appendLine();append(if(answer.fromGraph)tr("Listed from the project graph, whose facts were extracted by AI.", "Lista del grafo del proyecto, cuyos datos fueron extraídos por IA.") else tr("Answer written by Gemini Nano on the phone from the cited passages.", "Respuesta escrita por Gemini Nano en el teléfono a partir de los pasajes citados."))
         }
         if(!incognito){state=state.copy(share=UiShare(plain,preparing=false));return}
         state=state.copy(share=UiShare(incognito=true))
@@ -225,13 +228,66 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     fun search() {if(state.query.isBlank()){state=state.copy(isSearching=false);refresh();return};val query=state.query
         task(tr("Searching locally", "Buscando en el teléfono")){
             val start=System.nanoTime()
-            val result=withContext(worker){store.search(embedder.embedText(query,true),state.buildingId,state.totalCount,query,if(jevKey()!=null)Store.RERANK_CANDIDATES else Store.PASSAGES)}
+            val result=withContext(worker){val vector=embedder.embedText(query,true);val count=if(jevKey()!=null)Store.RERANK_CANDIDATES else Store.PASSAGES
+                withFacts(store.search(vector,state.buildingId,state.totalCount,query,count),vector,query,count)}
+            val listed=withContext(worker){graph.factsWithRelations(state.buildingId,com.proasiste.lite.graph.ListQuestions.relations(query),LIST_LIMIT)}
             showHits(result.hits,(System.nanoTime()-start)/1_000_000)
-            answer(query,result)
+            if(listed.isNotEmpty())listAnswer(listed) else answer(query,result)
         }
     }
+    /**
+     * Puts the project graph's best-matching facts ahead of the passages Nano answers from. Each fact keeps its source
+     * and page, so it is cited and checked like any passage, and is marked as a graph fact, not the document's words.
+     */
+    private fun withFacts(result:SearchResult,vector:FloatArray,query:String,count:Int):SearchResult{
+        val sources=store.sources(state.buildingId).associateBy{it.id}
+        val facts=graph.facts(state.buildingId,vector,query,GRAPH_FACTS).mapNotNull{f->sources[f.sourceId]?.let{s->SearchHit(s,VectorChunk(s.id,GRAPH_FACT_ORDINAL,f.page,0,tr("Graph fact: ","Dato del grafo: ")+f.fact,FloatArray(0)),f.similarity)}}
+        val merged=if(facts.isEmpty())result else result.copy(passages=(facts+result.passages).take(maxOf(count,facts.size)))
+        merged.passages.forEachIndexed{i,h->DeepSeekFacts.debugLog("passage [${i+1}] p${h.chunk.page} score=${"%.3f".format(java.util.Locale.US,h.score)} ${h.chunk.text.take(110).replace("\n"," ")}")}
+        return merged
+    }
+    /** Loads a graph file into the current project; its facts then join search answers. */
+    fun importGraph(uri:Uri)=task(tr("Importing graph", "Importando grafo")){
+        check(embedder.isLoaded){tr("Import the model first", "Primero importa el modelo")}
+        val project=state.buildingId
+        val added=withContext(worker){
+            val json=appContext.contentResolver.openInputStream(uri)!!.use{input->java.io.ByteArrayOutputStream().also{copyBounded(input,it,10_000_000)}.toString("UTF-8")}
+            graph.importFile(project,json){embedder.embedText(it)}
+        }
+        state=state.copy(status=tr("$added graph facts added to $project", "$added datos del grafo agregados a $project"))
+    }
+    /**
+     * Builds the project's graph with DeepSeek: each indexed PDF's pages go to OpenRouter with the key saved for Jev,
+     * and the facts that pass the number check replace that file's previous facts. Never runs for incognito projects.
+     */
+    fun buildGraph()=task(tr("Building graph with DeepSeek", "Construyendo el grafo con DeepSeek")){
+        check(embedder.isLoaded){tr("Import the model first", "Primero importa el modelo")}
+        val key=cloudKey()?:error(if(state.projects.firstOrNull{it.id==state.buildingId}?.incognito==true)tr("Graph building is off in incognito projects. Nothing left this phone.", "La construcción del grafo está desactivada en proyectos incógnito. Nada salió de este teléfono.") else tr("Save your OpenRouter key in settings first.", "Primero guarda tu clave de OpenRouter en la configuración."))
+        val project=state.buildingId
+        val pdfs=withContext(worker){store.sources(project).filter{it.type=="pdf"&&it.indexed}}
+        check(pdfs.isNotEmpty()){tr("Index this project's PDFs first.", "Primero indexa los PDF de este proyecto.")}
+        var added=0;var dropped=0;var pages=0;var cost=0.0;var review=0;var legal=0;var failed=0;var kept=0
+        for((i,s) in pdfs.withIndex()){
+            val texts=withContext(worker){pageTexts(s)}
+            val result=deepSeek.extract(key,s.title,texts){done,total->state=state.copy(status=tr("DeepSeek · ${s.title} · $done of $total parts done", "DeepSeek · ${s.title} · $done de $total partes listas"),progress=(i+done.toFloat()/total.coerceAtLeast(1))/pdfs.size)}
+            // A partial result never replaces a complete one: if a part failed and the file has facts, they stay.
+            val keepOld=result.failedParts>0&&withContext(worker){graph.factCounts(project)[s.id]?:0}>0
+            if(keepOld)kept++ else added+=withContext(worker){graph.replaceFacts(project,s.id,result.facts){embedder.embedText(it)}}
+            failed+=result.failedParts
+            dropped+=result.dropped;pages+=result.pagesSent.size;cost+=result.cost;review+=result.review;legal+=if(result.legal)1 else 0
+        }
+        state=state.copy(status=tr("$added graph facts from ${pdfs.size} PDFs${if(legal>0)" ($legal read as court rulings)" else ""} · $pages pages sent to DeepSeek${if(dropped>0)" · $dropped dropped by the checks" else ""}${if(review>0)" · $review held back for review" else ""}${if(failed>0)" · $failed parts couldn't be read" else ""}${if(kept>0)" · $kept files keep their previous facts" else ""} · $"+"%.4f".format(java.util.Locale.US,cost),
+            "$added datos del grafo de ${pdfs.size} PDF${if(legal>0)" ($legal leídos como fallos)" else ""} · $pages páginas enviadas a DeepSeek${if(dropped>0)" · $dropped descartados por las revisiones" else ""}${if(review>0)" · $review retenidos para revisión" else ""}${if(failed>0)" · $failed partes no se pudieron leer" else ""}${if(kept>0)" · $kept archivos conservan sus datos anteriores" else ""} · $"+"%.4f".format(java.util.Locale.US,cost)))
+    }
+    /** A PDF's pages as text for fact extraction: the prose, then each rebuilt table row on its own line. */
+    private fun pageTexts(s:Source)=PDDocument.load(File(s.path)).use{doc->(1..doc.numberOfPages).map{p->val read=PdfText.page(doc,p)
+        DeepSeekFacts.PageText(p,(listOf(read.prose)+read.tables.flatten()).joinToString("\n").trim())}}
     /** The key to use for the current project, or null when nothing may leave the phone. */
-    private fun jevKey():String?=if(state.projects.firstOrNull{it.id==state.buildingId}?.incognito==true)null else jevVault.load()
+    /** The saved OpenRouter key for the current project, or null when nothing may leave the phone. */
+    private fun cloudKey():String?=if(state.projects.firstOrNull{it.id==state.buildingId}?.incognito==true)null else jevVault.load()
+    /** The key for Jev's checks: only when the user has also turned Jev on. Off by default. */
+    private fun jevKey():String?=if(state.jevEnabled)cloudKey() else null
+    fun setJevEnabled(on:Boolean){prefs.edit().putBoolean("jev-enabled",on).apply();stopAnswer();state=state.copy(jevEnabled=on)}
     fun saveJevKey(raw:String){
         val key=raw.trim();if(key.isEmpty()||state.jevKeyChecking)return
         state=state.copy(jevKeyChecking=true,jevKeyError=null)
@@ -244,16 +300,25 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         }
     }
     fun removeJevKey(){jevVault.clear();stopAnswer();state=state.copy(jevKeySaved=false,jevKeyError=null)}
+    /** Answers a list question with the graph's facts themselves. No model writes it, so nothing can be left out or added, and there is nothing for Jev to check. */
+    private fun listAnswer(facts:List<com.proasiste.lite.graph.GraphFact>){
+        stopAnswer()
+        val all=store.sources(state.buildingId).associateBy{it.id}
+        val usable=facts.filter{it.sourceId in all}
+        val sources=usable.map{f->all.getValue(f.sourceId).ui(null,f.fact,tr("Page ${f.page} · graph fact","Página ${f.page} · dato del grafo"))}
+        state=state.copy(answer=UiAnswer(text=usable.withIndex().joinToString("\n"){(i,f)->"${f.fact} [${i+1}]"},sources=sources,working=false,fromGraph=true))
+    }
     /** Runs after the search so the list is usable meanwhile: Jev reranks when allowed, Gemini Nano writes a short cited answer, then Jev checks its citations. */
     private fun answer(question:String,result:SearchResult){
         stopAnswer()
         if(result.passages.isEmpty())return
         val incognito=state.projects.firstOrNull{it.id==state.buildingId}?.incognito==true
-        val offNote=if(incognito&&state.jevKeySaved)tr("Jev is off in incognito projects. Nothing left this phone.", "Jev está desactivado en proyectos incógnito. Nada salió de este teléfono.") else ""
+        val offNote=if(incognito&&state.jevKeySaved&&state.jevEnabled)tr("Jev is off in incognito projects. Nothing left this phone.", "Jev está desactivado en proyectos incógnito. Nada salió de este teléfono.") else ""
         state=state.copy(answer=UiAnswer(jevNote=offNote))
         answerJob=viewModelScope.launch{
             val passages=rerank(question,result)?:return@launch
-            val sources=passages.map{it.source.ui(it.score,it.chunk.text,tr("Page ${it.chunk.page}", "Página ${it.chunk.page}"))}
+            // A graph fact was written from the page, not quoted from it, so its citation says so.
+            val sources=passages.map{it.source.ui(it.score,it.chunk.text,if(it.chunk.ordinal==GRAPH_FACT_ORDINAL)tr("Page ${it.chunk.page} · graph fact", "Página ${it.chunk.page} · dato del grafo") else tr("Page ${it.chunk.page}", "Página ${it.chunk.page}"))}
             state=state.copy(answer=state.answer?.copy(status=tr("Gemini Nano is reading ${passages.size} passages…", "Gemini Nano está leyendo ${passages.size} pasajes…"),sources=sources))
             // With Jev on, the answer stays hidden until it's checked, so a sentence that gets removed is never shown.
             val key=jevKey();var written=""
@@ -345,6 +410,12 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     }
     override fun onCleared(){cancelIndex.set(true);answerJob?.cancel();nano.close();worker.executor.execute{embedder.close();store.close()};worker.close();super.onCleared()}
     companion object {
+        /** At most this many graph facts join the passages for one answer. */
+        const val GRAPH_FACTS=3
+        /** The most facts a list answer shows. */
+        const val LIST_LIMIT=40
+        /** Marks a passage that is a graph fact rather than a chunk of the file. */
+        const val GRAPH_FACT_ORDINAL=-1
         private fun validDate(value: String): LocalDate? = if (!Regex("\\d{4}-\\d{2}-\\d{2}").matches(value)) null else runCatching { LocalDate.parse(value) }.getOrNull()
         fun validateFilters(filters: UiFilters, availableAssetIds: List<String>): String? {
             if (filters.assetId != null && filters.assetId !in availableAssetIds) return tr("Choose an asset in the selected project.", "Elige un activo del proyecto seleccionado.")

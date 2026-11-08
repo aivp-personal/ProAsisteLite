@@ -45,6 +45,7 @@ class MainActivity:ComponentActivity(){
     private var document by mutableStateOf<UiItem?>(null)
     private var originalPhoto by mutableStateOf<UiItem?>(null)
     private val modelPicker=registerForActivityResult(ActivityResultContracts.OpenDocument()){it?.let(model::importModel)}
+    private val graphPicker=registerForActivityResult(ActivityResultContracts.OpenDocument()){it?.let(model::importGraph)}
     private val packPicker=registerForActivityResult(ActivityResultContracts.OpenDocument()){it?.let(model::importPack)}
     private val filesPicker=registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()){if(it.isNotEmpty())model.importFiles(it)}
     private val photoPicker=registerForActivityResult(ActivityResultContracts.OpenDocument()){it?.let(model::imageSearch)}
@@ -59,11 +60,13 @@ class MainActivity:ComponentActivity(){
                 onBuilding={stopAudio();model.setBuilding(it)},onCreateProject={number,name->stopAudio();model.createProject(number,name)},onDeleteProject={stopAudio();model.deleteProject(it)},
                 onToggleIncognito=model::toggleIncognito,onLanguage=model::setSpanish,onDeleteSource={stopAudio();model.deleteSource(it)},
                 onShareAnswer=model::shareAnswer,onDismissShare=model::dismissShare,
-                onSaveJevKey=model::saveJevKey,onRemoveJevKey=model::removeJevKey,
+                onSaveJevKey=model::saveJevKey,onRemoveJevKey=model::removeJevKey,onJevEnabled=model::setJevEnabled,
                 
                 onConfirmShare={text->model.dismissShare();startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,text),tr("Share answer", "Compartir respuesta")))},onQuery=model::setQuery,onSearch=model::search,
                 onImportModel={modelPicker.launch(arrayOf("*/*"))},onImportCorpus={packPicker.launch(arrayOf("application/zip","application/octet-stream"))},
                 onImportFiles={filesPicker.launch(arrayOf("image/*","audio/*","application/pdf"))},
+                onBuildGraph=model::buildGraph,
+                onImportGraph={graphPicker.launch(arrayOf("application/json","application/octet-stream","text/*"))},
                 onImageSearch={photoChoices=true},onRecordAudio={if(recorder!=null)stopRecording()else if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)startRecording()else microphone.launch(Manifest.permission.RECORD_AUDIO)},
                 onCapturePhoto={takePhoto(true)},
                 onOpenSource={if(it.kind==UiKind.REPORT)document=it else if(it.kind==UiKind.AUDIO)playAudio(it) else originalPhoto=it},
