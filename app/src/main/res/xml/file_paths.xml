@@ -1,3 +1,1 @@
-<paths>
-    <files-path name="documents" path="documents/" />
-</paths>
+<paths><files-path name="library" path="library/"/><cache-path name="capture" path="capture/"/></paths>

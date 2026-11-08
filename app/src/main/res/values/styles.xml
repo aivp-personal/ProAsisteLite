@@ -1,3 +1,1 @@
-<resources>
-    <style name="Theme.ProAsisteLite" parent="android:style/Theme.Material.NoActionBar" />
-</resources>
+<resources><style name="Theme.Plantroom" parent="android:style/Theme.Material.NoActionBar"><item name="android:fontFamily">sans</item><item name="android:windowLightStatusBar">false</item><item name="android:statusBarColor">@color/brand_black</item><item name="android:navigationBarColor">@color/brand_black</item><item name="android:windowBackground">@color/brand_black</item><item name="android:windowSplashScreenBackground">@color/brand_black</item><item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item><item name="android:windowActionModeOverlay">true</item></style></resources>

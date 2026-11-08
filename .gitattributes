@@ -1,4 +1,14 @@
-* text=auto eol=lf
-*.bat text eol=crlf
-*.png binary
+# Normalise text to LF in the repo (works on Windows and the Mac); never touch binaries.
+* text=auto
 *.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ttf binary
+*.otf binary
+*.m4a binary
+*.wav binary
+*.mp3 binary
+*.zip binary
+*.jar binary

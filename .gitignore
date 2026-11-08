@@ -1,21 +1,21 @@
 # Build output and caches
 build/
+app/build/
 .gradle/
 .kotlin/
 .idea/
 *.iml
 build.log
+captures/
 
 # Machine-specific (SDK path)
 local.properties
 
-# Built by native/build_native.py
-app/src/main/jniLibs/
-
-# Built apps and model files: rebuild or import instead
+# Release artefacts and large binaries: rebuild instead
 *.apk
 *.aab
 *.litertlm
+tap-hose-photos.zip
 
 # Signing keys never go in the repo
 *.jks
