@@ -111,6 +111,22 @@ object LegalFacts {
         val regex = Regex(pattern, RegexOption.IGNORE_CASE)
     }
 
+    /**
+     * The sentence on a page that best supports a fact: the one sharing the most words (four letters or longer, or
+     * a number) with the statement and the two names. Shown under a kept fact so the steward can judge it without
+     * opening the PDF. Null when no sentence shares at least two such words: the fact has nothing standing behind
+     * it on that page, which is itself worth seeing.
+     */
+    fun evidence(pageText: String, f: NewFact): String? {
+        fun terms(s: String) = Regex("[\\p{L}\\p{N}.]+").findAll(fold(s).lowercase()).map { it.value.trim('.') }.filter { it.length >= 4 || it.any(Char::isDigit) }.toSet()
+        val wanted = terms(f.statement) + terms(f.subject) + terms(f.obj)
+        if (wanted.isEmpty()) return null
+        val sentences = fold(pageText).replace(Regex("\\s+"), " ").split(Regex("(?<=[.;:])\\s+(?=[A-ZÁÉÍÓÚÑ¿¡\"“(0-9])")).map { it.trim() }.filter { it.length >= 20 }
+        val best = sentences.maxByOrNull { s -> terms(s).count { it in wanted } } ?: return null
+        if (terms(best).count { it in wanted } < 2) return null
+        return if (best.length <= 320) best else best.take(317).trimEnd() + "…"
+    }
+
     /** The court that issued a document, from its first page: the first court named, taken in the order above. */
     fun courtOf(firstPage: String): Court? = Court.entries.firstOrNull { it.regex.containsMatchIn(firstPage) }
 

@@ -81,11 +81,25 @@ data class UiReviewItem(
     val reason: String,
     /** The page where the checks would pass, when the held-back reason was the page. */
     val suggestedPage: Int? = null,
-    /** Set for a kept fact drawn for a spot check: rejecting removes it from the graph. */
+    /** Set for a kept fact (in the graph): rejecting removes it, approving marks it reviewed, editing replaces it. */
     val edgeId: Long? = null,
-)
+    /** Who wrote the fact: "reglas", "deepseek/…", "revisado" (a steward stood behind it) or "" for an import. */
+    val extractor: String = "",
+    /** The sentence on the page that best supports a kept AI fact; "" when no sentence does; null when not looked up. */
+    val evidence: String? = null,
+) {
+    val checked: Boolean get() = extractor == "revisado"
+    val byRules: Boolean get() = extractor == "reglas"
+}
 
-data class UiReview(val items: List<UiReviewItem>, val sample: Boolean = false, val loading: Boolean = false)
+/**
+ * The review screen's contents. [sample] is a spot check of kept facts; [pageMode] reviews one document or page with
+ * its held-back facts first and the kept ones after, grouped by page; [pendingOnly] shows the held-back facts alone.
+ */
+data class UiReview(val items: List<UiReviewItem>, val sample: Boolean = false, val loading: Boolean = false, val pageMode: Boolean = false, val pendingOnly: Boolean = false, val title: String = "", val subtitle: String = "")
+
+/** What a document or page holds for review: [pending] held-back facts, [facts] in the graph, [unchecked] nobody stood behind yet. */
+data class UiPageStatus(val pending: Int = 0, val facts: Int = 0, val unchecked: Int = 0)
 
 data class UiState(
     val buildingId: String = "P01",
@@ -93,6 +107,10 @@ data class UiState(
     val reviewCount: Int = 0,
     /** The review screen, when open. */
     val review: UiReview? = null,
+    /** Review status per document (by source id) in this project; documents with no graph facts are absent. */
+    val docReview: Map<String, UiPageStatus> = emptyMap(),
+    /** Review status per page of the document open in the viewer. */
+    val pageReview: Map<Int, UiPageStatus> = emptyMap(),
     val projects: List<UiProject> = SAMPLE_PROJECTS,
     val query: String = "",
     val items: List<UiItem> = emptyList(),
@@ -158,6 +176,16 @@ data class UiActions(
     val onSampleReview: () -> Unit = {},
     /** Opens the document at the item's page. */
     val onOpenReviewPage: (UiReviewItem) -> Unit = {},
+    /** Reviews everything the graph says about one document (by source id). */
+    val onReviewDocument: (String) -> Unit = {},
+    /** Reviews everything the graph says about one page of a document. */
+    val onReviewPage: (String, Int) -> Unit = { _, _ -> },
+    /** Reviews only the facts the checks held back on a document (page null) or one of its pages: the red link. */
+    val onReviewPending: (String, Int?) -> Unit = { _, _ -> },
+    /** Approves every kept AI fact still unchecked on a page of the open review, or in the whole review (page null). */
+    val onApproveRest: (Int?) -> Unit = {},
+    /** The viewer opened (or closed, with null) a document: its per-page review status is loaded. */
+    val onDocumentOpen: (UiItem?) -> Unit = {},
     val onImageSearch: () -> Unit = {},
     val onRecordAudio: () -> Unit = {},
     val onOpenSource: (UiItem) -> Unit = {},

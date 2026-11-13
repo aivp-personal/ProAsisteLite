@@ -21,6 +21,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -67,6 +68,7 @@ class MainActivity:ComponentActivity(){
                 onImportFiles={filesPicker.launch(arrayOf("image/*","audio/*","application/pdf"))},
                 onBuildGraph=model::buildGraph,onOpenReview=model::openReview,onCloseReview=model::closeReview,onApproveReview=model::approveReview,onCorrectReview=model::correctReview,onRejectReview=model::rejectReview,onSampleReview=model::sampleReview,
                 onOpenReviewPage={item->model.reviewPageItem(item)?.let{document=it}},
+                onReviewDocument=model::reviewDocument,onReviewPage=model::reviewPage,onReviewPending=model::reviewPending,onApproveRest=model::approveRest,onDocumentOpen=model::documentOpen,
                 onImportGraph={graphPicker.launch(arrayOf("application/json","application/octet-stream","text/*"))},
                 onImageSearch={photoChoices=true},onRecordAudio={if(recorder!=null)stopRecording()else if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)startRecording()else microphone.launch(Manifest.permission.RECORD_AUDIO)},
                 onCapturePhoto={takePhoto(true)},
@@ -78,7 +80,8 @@ class MainActivity:ComponentActivity(){
             if(photoChoices)MaterialTheme(colorScheme=darkColorScheme(),typography=BrandTypography){
                 AlertDialog(onDismissRequest={photoChoices=false},title={Text(tr("Search with a photo", "Buscar con una foto"))},text={Text(tr("Find visually related evidence in the selected project.", "Encuentra evidencia visualmente similar en el proyecto seleccionado."))},confirmButton={TextButton(onClick={photoChoices=false;photoPicker.launch(arrayOf("image/*"))}){Text(tr("Choose photo", "Elegir foto"))}},dismissButton={TextButton(onClick={photoChoices=false;takePhoto()}){Text(tr("Use camera", "Usar cámara"))}})
             }
-            document?.let{item->PdfViewer(item){document=null}}
+            LaunchedEffect(document?.id){model.documentOpen(document)}
+            document?.let{item->PdfViewer(item,model.state.pageReview,onReview={page->model.reviewPage(item.id,page)},onReviewPending={page->model.reviewPending(item.id,page)}){document=null}}
             originalPhoto?.let{item->PhotoViewer(item){originalPhoto=null}}
             LaunchedEffect(model.state.recording){if(model.state.recording){delay(55_000);if(recorder!=null)stopRecording()}}
         }
@@ -125,7 +128,8 @@ class MainActivity:ComponentActivity(){
     }
 }
 
-@Composable private fun PdfViewer(item:UiItem,onClose:()->Unit){
+/** [pageReview] is what the graph holds per page; the header's review link opens that page's facts through [onReview]. */
+@Composable private fun PdfViewer(item:UiItem,pageReview:Map<Int,UiPageStatus>,onReview:(Int)->Unit,onReviewPending:(Int)->Unit,onClose:()->Unit){
     var page by remember(item.id){mutableIntStateOf(Regex("\\d+").find(item.sourceLocation)?.value?.toIntOrNull()?.minus(1)?:0)}
     var pages by remember{mutableIntStateOf(1)}
     var image by remember{mutableStateOf<Bitmap?>(null)}
@@ -140,7 +144,7 @@ class MainActivity:ComponentActivity(){
     androidx.compose.ui.window.Dialog(onDismissRequest=onClose,properties=androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth=false)){
         MaterialTheme(colorScheme=darkColorScheme(),typography=BrandTypography){
             Column(Modifier.fillMaxSize().background(Color(0xFF0A0A0A)).statusBarsPadding().navigationBarsPadding().padding(16.dp)){
-                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){TextButton(onClick=onClose){Text(tr("Close", "Cerrar"))};Text("${page+1} / $pages",Modifier.padding(12.dp));Text("${item.assetId}",Modifier.padding(12.dp))}
+                Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){TextButton(onClick=onClose){Text(tr("Close", "Cerrar"))};Text("${page+1} / $pages",Modifier.padding(12.dp));Spacer(Modifier.weight(1f));ReviewLabel(pageReview[page+1],enabled=true,onPending={onReviewPending(page+1)},onAll={onReview(page+1)});Text(item.assetId,Modifier.padding(12.dp))}
                 Text(item.title,style=MaterialTheme.typography.titleMedium)
                 Box(Modifier.weight(1f).fillMaxWidth().padding(vertical=12.dp).transformable(transform)){image?.let{Image(it.asImageBitmap(),tr("Report page ${page+1}", "Página ${page+1} del informe"),Modifier.fillMaxSize().graphicsLayer(scaleX=scale,scaleY=scale,translationX=offset.x,translationY=offset.y))}?:if(error==null)CircularProgressIndicator()else Text(error!!)}
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){TextButton(onClick={page--},enabled=page>0){Text(tr("Previous", "Anterior"))};TextButton(onClick={page++},enabled=page+1<pages){Text(tr("Next", "Siguiente"))}}

@@ -353,7 +353,8 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                         }
                     }
                 } else if (showEvidence) items(visible, key = { it.id }) { item ->
-                    EvidenceRow(item, searching, onClick = { inspector = item })
+                    EvidenceRow(item, searching, onClick = { inspector = item }, review = if (library) state.docReview[item.id] else null, reviewEnabled = !locked,
+                        onReviewPending = { actions.onReviewPending(item.id, null) }, onReviewAll = { actions.onReviewDocument(item.id) })
                 }
                 if (library && visible.isNotEmpty()) item {
                     Text(tr("Original sources remain available on this phone.", "Las fuentes originales siguen disponibles en este teléfono."),
@@ -716,7 +717,7 @@ private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) 
 }
 
 @Composable
-private fun EvidenceRow(item: UiItem, searching: Boolean, onClick: () -> Unit) {
+private fun EvidenceRow(item: UiItem, searching: Boolean, onClick: () -> Unit, review: UiPageStatus? = null, reviewEnabled: Boolean = true, onReviewPending: () -> Unit = {}, onReviewAll: () -> Unit = {}) {
     Column(Modifier.fillMaxWidth().testTag("plantroom.source.${item.id}").clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 9.dp)) {
         if (item.kind == UiKind.PHOTO) {
             Box(Modifier.fillMaxWidth().height(if (searching) 160.dp else 164.dp).clip(RoundedCornerShape(13.dp))) {
@@ -746,7 +747,12 @@ private fun EvidenceRow(item: UiItem, searching: Boolean, onClick: () -> Unit) {
                     }
                     SourceMeta(item)
                 }
-                Spacer(Modifier.width(7.dp)); Glyph(if (item.kind == UiKind.AUDIO) "play" else "arrow", Muted, Modifier.padding(top = 19.dp).size(17.dp))
+                Spacer(Modifier.width(7.dp))
+                Column(horizontalAlignment = Alignment.End) {
+                    Glyph(if (item.kind == UiKind.AUDIO) "play" else "arrow", Muted, Modifier.padding(top = 19.dp).size(17.dp))
+                    // What the graph says about this document, and whether anyone has checked it.
+                    if (item.kind == UiKind.REPORT) ReviewLabel(review, reviewEnabled, Modifier.padding(top = 10.dp), onPending = onReviewPending, onAll = onReviewAll)
+                }
             }
             Spacer(Modifier.height(18.dp)); HorizontalDivider(color = Line.copy(alpha = .65f))
         }

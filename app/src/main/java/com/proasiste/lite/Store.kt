@@ -231,6 +231,12 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
                 "CREATE TABLE graph_review(id INTEGER PRIMARY KEY,building TEXT NOT NULL,source TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,page INTEGER NOT NULL,from_type TEXT NOT NULL,from_name TEXT NOT NULL,relation TEXT NOT NULL,to_type TEXT NOT NULL,to_name TEXT NOT NULL,statement TEXT NOT NULL,reason TEXT NOT NULL,extractor TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pendiente',decided_at INTEGER,note TEXT)",
                 "CREATE INDEX graph_review_pending ON graph_review(building,status)",
             ),
+            // 4: the fact as it was proposed (page|subject|relation|object, normalised), so a decision on it can be replayed
+            // when the document is rebuilt and the extractor proposes the same fact again, even after a correction.
+            listOf(
+                "ALTER TABLE graph_review ADD COLUMN original_key TEXT",
+                "CREATE INDEX graph_review_source ON graph_review(source,status)",
+            ),
         )
         private val STOP=setOf("the","and","for","are","how","what","when","where","which","who","why","does","do","did","can","you","your","with","this","that","from","into","about","have","has","was","were","will","should","there","they","them","a","an","of","to","in","on","is","it","be","or","as","at","by","if","i","my","me",
             "el","la","los","las","un","una","unos","unas","de","del","que","y","en","por","para","con","como","cual","cuando","donde","es","son","se","su","sus","al","lo","le","les","mi","yo","no","si","o")

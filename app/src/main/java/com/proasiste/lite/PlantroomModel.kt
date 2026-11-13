@@ -146,7 +146,9 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     fun refresh(){
         val sources=store.sources(state.buildingId)
         val candidates = if (state.isSearching) unfilteredSearchItems else sources.map{it.ui(excerpt=if(it.error.isNotBlank())tr("Not indexed: ${it.error}", "Sin indexar: ${it.error}") else "")}
-        state=state.copy(reviewCount=graph.reviewCount(state.buildingId),totalCount=sources.size,indexedCount=sources.count{it.indexed},photoCount=sources.count{it.type=="image"},audioCount=sources.count{it.type=="audio"},reportCount=sources.count{it.type=="pdf"},
+        val docReview=graph.documentStatus(state.buildingId).mapValues{(_,s)->UiPageStatus(s.pending,s.facts,s.unchecked)}
+        val pageReview=openDocumentId?.let{id->graph.pageStatus(id).mapValues{(_,s)->UiPageStatus(s.pending,s.facts,s.unchecked)}}?:emptyMap()
+        state=state.copy(reviewCount=graph.reviewCount(state.buildingId),docReview=docReview,pageReview=pageReview,totalCount=sources.size,indexedCount=sources.count{it.indexed},photoCount=sources.count{it.type=="image"},audioCount=sources.count{it.type=="audio"},reportCount=sources.count{it.type=="pdf"},
             availableAssetIds=sources.map{it.asset}.distinct().sorted(),items=filterItems(candidates,state.buildingId,state.filters))
     }
     private fun task(label:String,block:suspend()->Unit){
@@ -284,14 +286,57 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     private fun pageTexts(s:Source)=PDDocument.load(File(s.path)).use{doc->(1..doc.numberOfPages).map{p->val read=PdfText.page(doc,p)
         DeepSeekFacts.PageText(p,(listOf(read.prose)+read.tables.flatten()).joinToString("\n").trim())}}
     // ---- Review of held-back graph facts ----
-    private fun reviewUi(items:List<com.proasiste.lite.graph.Graph.ReviewItem>,suggest:Boolean):List<UiReviewItem>{
+    /**
+     * [suggest]: for held-back page reasons, the page where the checks would pass. [evidence]: for kept AI facts, the
+     * sentence on the page that best supports them. Either reads each document's text once.
+     */
+    private fun reviewUi(items:List<com.proasiste.lite.graph.Graph.ReviewItem>,suggest:Boolean,evidence:Boolean=suggest):List<UiReviewItem>{
         val titles=store.sources(state.buildingId).associate{it.id to it.title}
-        // Where would the checks pass? Only asked for page reasons, and the ruling's text is read once per document.
-        val checkers=if(!suggest)emptyMap() else items.map{it.sourceId}.distinct().mapNotNull{id->store.sources(state.buildingId).firstOrNull{it.id==id}}.associate{s->
-            val pages=pageTexts(s);s.id to (com.proasiste.lite.runtime.LegalFacts.Checker(pages,com.proasiste.lite.runtime.LegalFacts.thisRuling(pages,s.title)) to pages.map{it.page})}
+        val docs=if(!suggest&&!evidence)emptyMap() else items.map{it.sourceId}.distinct().mapNotNull{id->store.sources(state.buildingId).firstOrNull{it.id==id}}.associate{s->s.id to (s to pageTexts(s))}
+        val checkers=if(!suggest)emptyMap() else docs.mapValues{(_,d)->val(s,pages)=d;com.proasiste.lite.runtime.LegalFacts.Checker(pages,com.proasiste.lite.runtime.LegalFacts.thisRuling(pages,s.title)) to pages.map{it.page}}
         return items.map{r->
             val suggested=checkers[r.sourceId]?.let{(checker,pages)->if ("page" !in r.reason && "página" !in r.reason) null else pages.firstOrNull{p->p!=r.fact.page&&checker.check(r.fact.copy(page=p))==com.proasiste.lite.runtime.LegalFacts.Verdict.KEPT}}
-            UiReviewItem(r.id,r.sourceId,titles[r.sourceId]?:r.sourceId,r.fact.page,r.fact.subjectType,r.fact.subject,r.fact.relation,r.fact.objectType,r.fact.obj,r.fact.statement,r.reason,suggested,r.edgeId)
+            val support=if(!evidence||r.edgeId==null||r.fact.extractor=="reglas")null else docs[r.sourceId]?.second?.firstOrNull{it.page==r.fact.page}?.let{com.proasiste.lite.runtime.LegalFacts.evidence(it.text,r.fact)?:""}
+            UiReviewItem(r.id,r.sourceId,titles[r.sourceId]?:r.sourceId,r.fact.page,r.fact.subjectType,r.fact.subject,r.fact.relation,r.fact.objectType,r.fact.obj,r.fact.statement,r.reason,suggested,r.edgeId,r.fact.extractor,support)
+        }
+    }
+    /** The document open in the viewer, whose pages carry a review status. */
+    private var openDocumentId:String?=null
+    fun documentOpen(item:UiItem?){openDocumentId=item?.id;refresh()}
+    /** Everything the graph says about one document, or one of its pages: held-back facts first, then the kept ones. */
+    fun reviewDocument(sourceId:String)=reviewPage(sourceId,null)
+    /** Only the facts the checks held back on a document or page: the red link. */
+    fun reviewPending(sourceId:String,page:Int?)=reviewPage(sourceId,page,pendingOnly=true)
+    /** What the open review covers, so it can be reloaded after a kept fact is replaced. */
+    private data class ReviewScope(val sourceId:String,val page:Int?,val pendingOnly:Boolean)
+    private var reviewScope:ReviewScope?=null
+    fun reviewPage(sourceId:String,page:Int?)=reviewPage(sourceId,page,pendingOnly=false)
+    private fun reviewPage(sourceId:String,page:Int?,pendingOnly:Boolean){
+        if(state.busy)return
+        reviewScope=ReviewScope(sourceId,page,pendingOnly)
+        val title=store.sources(state.buildingId).firstOrNull{it.id==sourceId}?.title?:sourceId
+        val heading=if(page==null)title else tr("$title · page $page","$title · página $page")
+        state=state.copy(review=UiReview(emptyList(),loading=true,pageMode=true,pendingOnly=pendingOnly,title=heading))
+        viewModelScope.launch{
+            val items=withContext(worker){reviewUi(graph.pageItems(state.buildingId,sourceId,page,pendingOnly),suggest=true)}
+            val pending=items.count{it.edgeId==null}
+            val subtitle=if(pendingOnly)tr("$pending held back by the checks. Open the page, then approve, correct or reject.","$pending retenidos por las revisiones. Abre la página y aprueba, corrige o rechaza.")
+                else if(pending>0)tr("$pending held back by the checks, then ${items.size-pending} facts in the graph. Approve what the page supports; edit or reject the rest.","$pending retenidos por las revisiones, luego ${items.size-pending} datos en el grafo. Aprueba lo que la página respalda; corrige o rechaza el resto.")
+                else tr("${items.size} facts in the graph for this ${if(page==null)"document" else "page"}. Approve what the page supports; edit or reject the rest.","${items.size} datos en el grafo para ${if(page==null)"este documento" else "esta página"}. Aprueba lo que la página respalda; corrige o rechaza el resto.")
+            state=state.copy(review=UiReview(items,pageMode=true,pendingOnly=pendingOnly,title=heading,subtitle=subtitle))
+        }
+    }
+    /**
+     * Approves every kept AI fact still unchecked on [page] of the open review, or in all of it (null). One decision is
+     * recorded per fact, with reason "página" for a page just read and "documento" for the rest of a document.
+     */
+    fun approveRest(page:Int?){
+        val targets=state.review?.items?.filter{it.edgeId!=null&&!it.checked&&!it.byRules&&(page==null||it.page==page)}.orEmpty()
+        if(targets.isEmpty())return
+        val reason=if(page==null)"documento" else "página"
+        viewModelScope.launch{
+            val done=try{withContext(worker){targets.filter{graph.approveKept(state.buildingId,it.edgeId!!,reason)}.map{it.id}.toSet()}}catch(e:Exception){state=state.copy(error=e.message?.take(200));return@launch}
+            state=state.copy(review=state.review?.let{r->r.copy(items=r.items.map{if(it.id in done)it.copy(extractor="revisado") else it})})
         }
     }
     fun openReview(){
@@ -302,26 +347,36 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
             state=state.copy(review=UiReview(items))
         }
     }
-    fun closeReview(){state=state.copy(review=null);refresh()}
+    fun closeReview(){reviewScope=null;state=state.copy(review=null);refresh()}
     fun sampleReview(){
         state=state.copy(review=UiReview(emptyList(),sample=true,loading=true))
         viewModelScope.launch{
-            val items=withContext(worker){reviewUi(graph.sampleKept(state.buildingId,REVIEW_SAMPLE),suggest=false)}
+            val items=withContext(worker){reviewUi(graph.sampleKept(state.buildingId,REVIEW_SAMPLE),suggest=false,evidence=true)}
             state=state.copy(review=UiReview(items,sample=true))
         }
     }
-    private fun decide(item:UiReviewItem,block:()->Boolean){
+    /** Runs a decision, then takes the item off the screen, or shows it as [replaced] (a kept fact that stays, now reviewed). */
+    private fun decide(item:UiReviewItem,replaced:UiReviewItem?=null,block:()->Boolean){
         viewModelScope.launch{
             val ok=try{withContext(worker){block()}}catch(e:Exception){state=state.copy(error=e.message?.take(200));false}
-            if(ok)state=state.copy(review=state.review?.let{r->r.copy(items=r.items.filter{it.id!=item.id})})
+            if(ok)state=state.copy(review=state.review?.let{r->r.copy(items=if(replaced!=null)r.items.map{if(it.id==item.id)replaced else it} else r.items.filter{it.id!=item.id})})
         }
     }
-    fun approveReview(item:UiReviewItem)=decide(item){graph.approveReview(state.buildingId,item.id,null){embedder.embedText(it)}}
-    fun correctReview(item:UiReviewItem)=decide(item){
-        val fact=com.proasiste.lite.graph.NewFact(item.page,item.fromType.trim(),item.from.trim(),item.relation.trim(),item.toType.trim(),item.to.trim(),item.statement.trim())
-        graph.approveReview(state.buildingId,item.id,fact){embedder.embedText(it)}
+    private fun factOf(item:UiReviewItem)=com.proasiste.lite.graph.NewFact(item.page,item.fromType.trim(),item.from.trim(),item.relation.trim(),item.toType.trim(),item.to.trim(),item.statement.trim())
+    fun approveReview(item:UiReviewItem)=
+        if(item.edgeId!=null)decide(item,item.copy(extractor="revisado")){graph.approveKept(state.buildingId,item.edgeId)}
+        else decide(item){graph.approveReview(state.buildingId,item.id,null){embedder.embedText(it)}}
+    fun correctReview(item:UiReviewItem){
+        if(item.edgeId==null){decide(item){graph.approveReview(state.buildingId,item.id,factOf(item)){embedder.embedText(it)}};return}
+        // The corrected fact is a new link with a new id, so the page's list is read again rather than patched.
+        viewModelScope.launch{
+            try{withContext(worker){graph.correctKept(state.buildingId,item.edgeId,factOf(item)){embedder.embedText(it)}}}catch(e:Exception){state=state.copy(error=e.message?.take(200));return@launch}
+            reviewScope?.let{reviewPage(it.sourceId,it.page,it.pendingOnly)}
+        }
     }
-    fun rejectReview(item:UiReviewItem)=decide(item){if(item.edgeId!=null)graph.rejectKept(state.buildingId,item.edgeId) else graph.rejectReview(item.id)}
+    fun rejectReview(item:UiReviewItem)=decide(item){
+        if(item.edgeId!=null)graph.rejectKept(state.buildingId,item.edgeId,reason=if(state.review?.sample==true)"muestra" else "página") else graph.rejectReview(item.id)
+    }
     /** The item's document as the viewer shows it, open at the item's page. */
     fun reviewPageItem(item:UiReviewItem):UiItem?=store.sources(state.buildingId).firstOrNull{it.id==item.sourceId}?.ui(null,item.statement,tr("Page ${item.page}","Página ${item.page}"))
     /** The key to use for the current project, or null when nothing may leave the phone. */

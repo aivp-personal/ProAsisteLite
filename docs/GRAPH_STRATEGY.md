@@ -102,10 +102,10 @@ provenance, and a wrong merge can be split again. A merge that cannot be traced 
 Status: legal mode runs (two passes, fixed types and relations, naming rules) after the skeleton, and AI facts may
 only name rulings and ministers the skeleton found in the text or the project graph already holds (norms are not yet
 checked against a list). Every fact now stores its extractor ("reglas", "deepseek/<model>@<prompt version>",
-"revisado", or "" for an import), and every review decision is kept with its date (schema 3, 2026-11-08). Merges are
-not logged yet.
+"revisado", or "" for an import), and every review decision is kept with its date and the key of the fact it was
+taken on, and is replayed when the document is rebuilt (schema 4, 2026-11-08). Merges are not logged yet.
 
-### 4. Checks, then review — review screen done (2026-11-08)
+### 4. Checks, then review — review by document and page done (2026-11-08)
 
 Checks in place: numbers on the page, most words on the page, body of law matches the text, relation runs the right
 way, one fact per link, and a fact may only name rulings and ministers the skeleton found or the project graph already
@@ -117,8 +117,34 @@ model wrote it with its reason in plain words, opens the cited page, and offers 
 where the checks would pass is proposed), Editar (names, types, relation, page) and Rechazar. Approved facts enter the
 graph with extractor "revisado"; decisions stay as the record and a new extraction replaces only pending items.
 "Muestra" draws ten kept AI facts at random so the errors that got through can be counted; rejecting one removes it
-and records it. Not yet: approving a Norma body mismatch should add the alias to a table (aliases are still read from
-the text), and "apply to all" for a repeated reason.
+and records it.
+
+Review by document and page (the user's design, 2026-11-08): every PDF row in the Library and every page in the
+viewer carries a link of the form "(to do) / total": "Revisar (6) / 169" with the left part red when the checks held
+six facts back there (it opens those alone), gold "Revisar (163) / 169" when none are held back and 163 kept facts
+have nobody standing behind them yet, "✓ 169" muted when every fact is checked (rule facts count as checked), nothing
+when the graph says nothing about it. The total opens one long screen with everything the graph says, grouped by page
+under sticky page headers: the page's held-back facts first, then its kept facts, each labelled with who wrote it
+(DeepSeek, ✓ Revisado); rule facts are folded under "▸ 18 por reglas" since they are formulaic and already count as
+checked. Under each kept AI fact the app quotes the sentence on the page that shares the most words with it, so most
+facts can be judged without opening the PDF, and a fact no sentence supports says so in red. Kept facts take the same
+decisions: approving marks the fact "revisado", editing replaces it, rejecting removes it; all are recorded. This
+replaces the random sample as the way to find errors that got through; the sample stays for measuring the rate.
+
+Bulk approval is guarded. Each page header has "Aprobar el resto (5)": the steward reads the page, rejects or edits
+the wrong facts, and approves what is left in one tap (reason "página"). At the very end of a document's list, reachable
+only by scrolling past every page, "Aprobar los N restantes" approves everything still unchecked (reason "documento",
+so a read page can later be told from a bulk approval). Either way one `aprobado` row is recorded per fact, and a
+rebuild replays them.
+
+Decisions survive a rebuild. Every decision stores the key of the fact as it was proposed
+(page | subject | relation | object, normalised; `Graph.decisionKey`, schema 4). When a document's facts are replaced,
+a proposed fact matching a rejected one stays out, one matching an approved or corrected one is skipped and the
+steward's version is re-inserted as "revisado", and a held-back fact already decided is not queued again.
+
+Not yet: approving a Norma body mismatch should add the alias to a table (aliases are still read from the text),
+"apply to all" for a repeated reason, sorting kept facts by risk (nodes that appear nowhere else first), and "reject
+all with this name" when a node name is wrong across many facts.
 
 ### 5. Measure before scaling — not started
 
