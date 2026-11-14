@@ -51,6 +51,16 @@ data class UiItem(
     val highlight: String = "",
 )
 
+/** A decision the user took, with when. */
+data class UiDecision(val value: String, val note: String, val created: Long)
+
+/** A saved report: [cited] are its passages, each opening its page highlighted; [decision] the latest one taken on it. */
+data class UiReport(val id: Long, val title: String, val question: String, val body: String, val model: String, val cited: List<UiItem>,
+                    val created: Long, val updated: Long, val decision: UiDecision? = null, val history: List<UiDecision> = emptyList())
+
+/** A file the user is about to save: the app asks where, then writes it. */
+data class UiExport(val name: String, val mime: String)
+
 /** A tag in use in the project and how many files carry it. */
 data class UiTagCount(val name: String, val count: Int)
 /** A tag rule: [kind] is "carpeta" (each subfolder name), "nombre" ([pattern] in the file name gives [tag]) or "año". */
@@ -190,6 +200,14 @@ data class UiState(
     val aiTags: List<UiTagDef> = emptyList(),
     /** What this project's graph extracts: automatic, or its own node and link types. */
     val graphSchema: com.proasiste.lite.graph.GraphSchema = com.proasiste.lite.graph.GraphSchema(),
+    /** This project's saved reports, most recently changed first. */
+    val reports: List<UiReport> = emptyList(),
+    /** The report open on screen. */
+    val openReport: UiReport? = null,
+    /** The latest decision on each file of this project, by source id. */
+    val fileDecisions: Map<String, UiDecision> = emptyMap(),
+    /** A file waiting for the user to choose where to save it. */
+    val export: UiExport? = null,
 )
 
 data class UiActions(
@@ -237,6 +255,24 @@ data class UiActions(
     val onRemoveLinkType: (String) -> Unit = {},
     /** Replaces the custom types with a copy of the Chilean rulings types. */
     val onLegalPreset: () -> Unit = {},
+    /** Saves the current answer as a report, with its question and cited passages. */
+    val onSaveAnswer: () -> Unit = {},
+    val onOpenReport: (Long) -> Unit = {},
+    val onCloseReport: () -> Unit = {},
+    /** Saves a report's edited title and text (id, title, body). */
+    val onSaveReport: (Long, String, String) -> Unit = { _, _, _ -> },
+    val onDeleteReport: (Long) -> Unit = {},
+    /** Starts a report written by hand. */
+    val onNewNote: () -> Unit = {},
+    /** Records a decision: target ("archivo" or "informe"), its id, the decision, a note. */
+    val onDecide: (String, String, String, String) -> Unit = { _, _, _, _ -> },
+    /** Saves a report as a file: "md" or "pdf". */
+    val onExportReport: (Long, String) -> Unit = { _, _ -> },
+    val onExportDecisions: () -> Unit = {},
+    /** Saves the project's graph facts: "csv" or "json". */
+    val onExportFacts: (String) -> Unit = {},
+    /** Saves one PDF (by source id) as a DocLang file. */
+    val onExportDocLang: (String) -> Unit = {},
     val onQuery: (String) -> Unit = {},
     val onSearch: () -> Unit = {},
     val onImportModel: () -> Unit = {},

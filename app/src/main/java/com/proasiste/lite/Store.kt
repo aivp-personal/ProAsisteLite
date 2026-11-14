@@ -194,7 +194,7 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
     /** Remove a project's sources, their search index, graph and the app's private copies of their files. Returns the source count. */
     fun deleteProject(project:String):Int{
         val doomed=sources(project)
-        writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("graph_schemas","building=?",arrayOf(project));delete("tag_rules","building=?",arrayOf(project));delete("tags","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
+        writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("graph_schemas","building=?",arrayOf(project));delete("decisions","building=?",arrayOf(project));delete("reports","building=?",arrayOf(project));delete("tag_rules","building=?",arrayOf(project));delete("tags","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
         indexChanged()
         doomed.forEach{deleteCopy(it.path)}
         return doomed.size
@@ -202,7 +202,7 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
     /** Remove one source, its index and graph links, and the app's private copy of its file. Returns false if it didn't exist. */
     fun deleteSource(id:String):Boolean{
         val (path,building)=readableDatabase.query("sources",arrayOf("path","building"),"id=?",arrayOf(id),null,null,null).use{if(it.moveToFirst())it.getString(0) to it.getString(1) else null}?:return false
-        writableDatabase.inTransaction{delete("sources","id=?",arrayOf(id));execSQL(DELETE_UNLINKED_NODES,arrayOf(building))}
+        writableDatabase.inTransaction{delete("decisions","target='archivo' AND target_id=?",arrayOf(id));delete("sources","id=?",arrayOf(id));execSQL(DELETE_UNLINKED_NODES,arrayOf(building))}
         indexChanged()
         deleteCopy(path)
         return true
@@ -321,6 +321,14 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
             // 8: each project's graph schema (its node and link types), as JSON; a project without a row is automatic.
             listOf(
                 "CREATE TABLE graph_schemas(building TEXT PRIMARY KEY,json TEXT NOT NULL)",
+            ),
+            // 9: saved reports (an answer with its question and cited passages, or a note) and the user's dated decisions
+            // on files and reports. Decisions are only ever added, so their history stays.
+            listOf(
+                "CREATE TABLE reports(id INTEGER PRIMARY KEY,building TEXT NOT NULL,title TEXT NOT NULL,question TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',cited TEXT NOT NULL DEFAULT '[]',created INTEGER NOT NULL,updated INTEGER NOT NULL)",
+                "CREATE INDEX reports_building ON reports(building,updated)",
+                "CREATE TABLE decisions(id INTEGER PRIMARY KEY,building TEXT NOT NULL,target TEXT NOT NULL,target_id TEXT NOT NULL,value TEXT NOT NULL,note TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL)",
+                "CREATE INDEX decisions_target ON decisions(building,target,target_id)",
             ),
         )
         private val SOURCE_COLUMNS=arrayOf("id","path","type","building","asset","date","title","synthetic","indexed","error","pages","no_text_pages")

@@ -11,7 +11,7 @@ ProAsisteLocal (`com.plantroom.pocket`) loads every chunk to search, which break
 | 2 | Choosing the model for answers | **Done** (2026-11-13) |
 | 3 | Sorting and tagging | **Done** (2026-11-13) |
 | 4 | DocLang reader, then graph tables the user guides | **Done** (2026-11-14) |
-| 5 | Skills and actions on files, saved reports and decisions | Not started |
+| 5 | Skills and actions on files, saved reports and decisions | In progress: reports, decisions, export and DocLang files done |
 
 ## 1. Getting thousands of files in — done
 
@@ -140,3 +140,18 @@ dissent. Scans still need OCR first.
   conclusion), filterable by tag. Graph review decisions are already kept with date and reason.
 - **Export**: reports and decisions as PDF, Word or Markdown; decisions and graph facts as CSV or JSON, for Excel or the
   Gemelo Legal tools on the computer.
+
+**Done (2026-11-14), part 1:** schema 9 adds `reports` and `decisions` (decisions are only ever added, so their history
+stays; deleting a file, report or project takes its decisions along). An answer's "Save as report" keeps the question, the
+answer, who wrote it and every passage it was given, in order, so its [n] marks still match, each with its page and place
+so it opens highlighted. Library → Reports lists them; a report opens full screen to edit its title and text, open its
+sources, decide on it (Relevant, Not relevant, Accepted, Rejected, To check, or your own words, with a note), save it as
+PDF (Android's own writer, A4) or Markdown, or delete it; "+ Write a note" starts one by hand. A file's detail sheet
+takes decisions too, and "Save as DocLang" writes its .doclang file. Library → Reports also saves all decisions as CSV
+and the graph's facts as CSV or JSON (one "proasiste-graph-1" object per file, re-importable). Every file is written
+where the user picks through Android's save dialog; nothing is sent. Checked on the Fold: a Nano answer saved as a report
+and as a PDF that reads back correctly; STC 1810-10's DocLang file from the phone matches to_doclang.py exactly (same
+blocks, page breaks and words). Not yet: Word output, reports in search, decisions on a page, filtering by decision.
+
+Next, part 2: actions on files (summarise, extract a table, classify, find dates and parties, Convert to DocLang for a
+whole project or tag) run in the background, with results saved as reports, and the user's own actions saved as skills.

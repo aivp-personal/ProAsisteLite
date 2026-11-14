@@ -39,6 +39,9 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     val embedder=engine.embedder
     private val graph=com.proasiste.lite.graph.Graph(store)
     private val tags=com.proasiste.lite.tags.Tags(store)
+    // Declared before init: refresh() runs during construction and reads them.
+    private val reports=com.proasiste.lite.reports.Reports(store)
+    private var openReportId:Long?=null
     private val deepSeek=com.proasiste.lite.runtime.DeepSeekFacts()
     private val worker=engine.worker
     private val modelFile=engine.modelFile
@@ -121,6 +124,96 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         }
     }
     private fun CloudAnswerer.Model.ui()=UiModel(id,name,inputPerMillion,outputPerMillion,context)
+
+    // ---- Reports, decisions and export ----
+    private fun pageOf(location:String)=Regex("\\d+").find(location)?.value?.toIntOrNull()?:1
+    private fun uiReports(building:String):List<UiReport>{
+        val sources=store.sources(building).associateBy{it.id}
+        val history=reports.decisions(building).filter{it.target==com.proasiste.lite.reports.Reports.REPORT}.groupBy{it.targetId}
+        return reports.list(building).map{r->
+            val h=history[r.id.toString()].orEmpty().map{UiDecision(it.value,it.note,it.created)}
+            UiReport(r.id,r.title,r.question,r.body,r.model,r.cited.mapNotNull{c->sources[c.sourceId]?.ui(null,c.excerpt,tr("Page ${c.page}","Página ${c.page}"))?.copy(highlight=c.place)},r.created,r.updated,h.firstOrNull(),h)
+        }
+    }
+    private fun refreshReports(){
+        val list=uiReports(state.buildingId)
+        val latest=reports.latest(state.buildingId).filterKeys{it.startsWith(com.proasiste.lite.reports.Reports.FILE+":")}
+            .map{(k,d)->k.substringAfter(':') to UiDecision(d.value,d.note,d.created)}.toMap()
+        state=state.copy(reports=list,openReport=openReportId?.let{id->list.firstOrNull{it.id==id}},fileDecisions=latest)
+    }
+    /**
+     * Saves the answer on screen as a report: the question, the answer as written, who wrote it, and the passages it was
+     * given, in their order, so its [n] marks still point at the right one; each keeps its page and place so it opens
+     * highlighted later.
+     */
+    fun saveAnswer(){
+        val a=state.answer?:return;if(a.working||a.text.isBlank()||a.text.trim().startsWith("NOT_FOUND"))return
+        val passages=a.sources.map{s->com.proasiste.lite.reports.Cited(s.id,s.title,pageOf(s.sourceLocation),s.excerpt,s.highlight)}
+        val question=state.query.trim();val building=state.buildingId
+        val model=if(a.fromGraph)"graph" else a.writer
+        viewModelScope.launch{
+            val id=withContext(worker){reports.save(com.proasiste.lite.reports.Report(0,building,question.take(120).ifEmpty{tr("Answer","Respuesta")},question,a.text.trim(),model,passages,0,0))}
+            openReportId=id;refreshReports()
+            state=state.copy(status=tr("Saved as a report in the Library","Guardado como informe en la Biblioteca"))
+        }
+    }
+    fun openReport(id:Long){openReportId=id;refreshReports()}
+    fun closeReport(){openReportId=null;state=state.copy(openReport=null)}
+    fun saveReport(id:Long,title:String,body:String){
+        val r=reports.get(id)?:return
+        viewModelScope.launch{withContext(worker){reports.save(r.copy(title=title.ifBlank{r.title},body=body))};refreshReports()}
+    }
+    fun deleteReport(id:Long){viewModelScope.launch{withContext(worker){reports.delete(id)};if(openReportId==id)openReportId=null;refreshReports()}}
+    /** A report written by hand, opened for editing. */
+    fun newNote(){
+        val building=state.buildingId
+        viewModelScope.launch{val id=withContext(worker){reports.save(com.proasiste.lite.reports.Report(0,building,tr("Note","Nota")+" · "+java.time.LocalDate.now(),"","","",emptyList(),0,0))};openReportId=id;refreshReports()}
+    }
+    fun decide(target:String,id:String,value:String,note:String){
+        val building=state.buildingId
+        viewModelScope.launch{
+            try{withContext(worker){reports.decide(building,target,id,value,note)}}catch(e:Exception){state=state.copy(error=e.message?.take(200))}
+            refreshReports()
+        }
+    }
+    /** What to write once the user has picked where; kept until then. */
+    private var pendingExport:((java.io.OutputStream)->Unit)?=null
+    private fun askToSave(name:String,mime:String,write:(java.io.OutputStream)->Unit){pendingExport=write;state=state.copy(export=UiExport(name,mime))}
+    fun exportReport(id:Long,format:String){
+        val r=reports.get(id)?:return;val d=reports.decisions(state.buildingId)
+        if(format=="pdf")askToSave(com.proasiste.lite.reports.Export.fileName(r.title,"pdf"),"application/pdf"){com.proasiste.lite.reports.Export.pdf(r,d,it)}
+        else askToSave(com.proasiste.lite.reports.Export.fileName(r.title,"md"),"text/markdown"){it.write(com.proasiste.lite.reports.Export.markdown(r,d).toByteArray())}
+    }
+    /**
+     * Saves one PDF as DocLang 0.9: its blocks with their boxes, read on this phone. Saved as a generic file, since
+     * declaring it XML makes Android add ".xml" after ".doclang".
+     */
+    fun exportDocLang(sourceId:String){
+        val s=store.sources(state.buildingId).firstOrNull{it.id==sourceId&&it.type=="pdf"}?:return
+        askToSave(com.proasiste.lite.reports.Export.fileName(s.title.removeSuffix(".pdf").removeSuffix(".PDF"),"doclang"),"application/octet-stream"){out->
+            val xml=PDDocument.load(File(s.path)).use{DocLang.toXml(DocLang.read(it))}
+            out.write(xml.toByteArray())
+        }
+    }
+    fun exportDecisions(){
+        val d=reports.decisions(state.buildingId)
+        askToSave("decisiones-${state.buildingId}.csv","text/csv"){it.write(com.proasiste.lite.reports.Export.decisionsCsv(d).toByteArray())}
+    }
+    fun exportFacts(format:String){
+        val f=com.proasiste.lite.reports.Export.facts(store,state.buildingId)
+        if(f.isEmpty()){state=state.copy(error=tr("This project's graph has no facts yet.","El grafo de este proyecto aún no tiene datos."));return}
+        if(format=="json")askToSave("grafo-${state.buildingId}.json","application/json"){it.write(com.proasiste.lite.reports.Export.factsJson(f).toByteArray())}
+        else askToSave("grafo-${state.buildingId}.csv","text/csv"){it.write(com.proasiste.lite.reports.Export.factsCsv(f).toByteArray())}
+    }
+    /** Writes the waiting file where the user chose, or forgets it when they cancelled. */
+    fun exportTo(uri:Uri?){
+        val write=pendingExport;pendingExport=null;val name=state.export?.name.orEmpty();state=state.copy(export=null)
+        if(uri==null||write==null)return
+        viewModelScope.launch{
+            try{withContext(Dispatchers.IO){appContext.contentResolver.openOutputStream(uri)!!.use(write)};state=state.copy(status=tr("Saved $name","Guardado $name"))}
+            catch(e:Exception){state=state.copy(error=tr("Couldn't save $name: ${e.message?.take(120)}","No se pudo guardar $name: ${e.message?.take(120)}"))}
+        }
+    }
 
     // ---- Graph types ----
     /** Changes the project's graph schema and saves it; facts already in the graph stay until the graph is built again. */
@@ -242,7 +335,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         state=state.copy(projects=projects,buildingId=if(state.buildingId==id)projects.first().id else state.buildingId,
             query="",isSearching=false,searchMillis=null,filters=UiFilters(),filterError=null,status=tr("Deleted $id $name · $count sources removed", "Eliminado $id $name · $count fuentes quitadas"))
     }
-    fun setBuilding(id:String){if(state.busy||state.recording)return;require(id in projectIds());prefs.edit().putString("project",id).apply();stopAnswer();unfilteredSearchItems=emptyList();state=state.copy(buildingId=id,query="",isSearching=false,searchMillis=null,filters=UiFilters(),filterError=null);refresh()}
+    fun setBuilding(id:String){if(state.busy||state.recording)return;require(id in projectIds());openReportId=null;prefs.edit().putString("project",id).apply();stopAnswer();unfilteredSearchItems=emptyList();state=state.copy(buildingId=id,query="",isSearching=false,searchMillis=null,filters=UiFilters(),filterError=null);refresh()}
     fun setQuery(q:String){if(state.busy||state.recording)return;state=state.copy(query=q.take(600),isSearching=false,searchMillis=null);refresh()}
     fun dismissError(){state=state.copy(error=null)}
     fun playback(id:String?){state=state.copy(playingId=id)}
@@ -273,6 +366,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
             graphSchema=store.graphSchema(state.buildingId),
             tagRules=tags.rules(state.buildingId).map{UiTagRule(it.id,it.kind,it.pattern,it.tag)},aiTags=tags.definitions(state.buildingId).map{UiTagDef(it.name,it.description)},
             availableAssetIds=sources.map{it.asset}.distinct().sorted(),items=filterItems(candidates,state.buildingId,state.filters))
+        refreshReports()
     }
     /** What the Library says under a file: why it isn't indexed, or which of its pages couldn't be read. */
     private fun libraryNote(s:Source)=when{

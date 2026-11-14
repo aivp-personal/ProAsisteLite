@@ -118,6 +118,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         var inspector by remember { mutableStateOf<UiItem?>(null) }
         var tagsSheet by remember { mutableStateOf(false) }
         var graphTypes by remember { mutableStateOf(false) }
+        var reportsSheet by remember { mutableStateOf(false) }
         var deleteSource by remember { mutableStateOf<UiItem?>(null) }
         var library by rememberSaveable { mutableStateOf(false) }
         val listState = rememberLazyListState()
@@ -313,7 +314,15 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                 val answer = state.answer
                 if (searching && answer != null) item {
                     AnswerCard(answer, incognito = state.projects.firstOrNull { it.id == state.buildingId }?.incognito == true,
-                        onSource = { inspector = it }, onShare = actions.onShareAnswer)
+                        onSource = { inspector = it }, onShare = actions.onShareAnswer, onSave = actions.onSaveAnswer)
+                }
+                if (showEvidence && !searching) item {
+                    // Saved answers and notes: their own row, like the graph review.
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).background(Steel, RoundedCornerShape(14.dp))
+                        .clickable(enabled = !locked) { reportsSheet = true }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.reports-row"), verticalAlignment = Alignment.CenterVertically) {
+                        Text(tr("Reports · ${state.reports.size}", "Informes · ${state.reports.size}"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Glyph("arrow", Gold, Modifier.size(14.dp))
+                    }
                 }
                 if (showEvidence && !searching && state.reviewCount > 0) item {
                     // Graph facts the checks held back wait here for the steward: its own row, not a kind of file.
@@ -401,6 +410,8 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         if (filterSheet) FilterSheet(state, actions, onClose = { filterSheet = false })
         if (tagsSheet) TagsSheet(state, actions, onClose = { tagsSheet = false })
         if (graphTypes) GraphTypesSheet(state, actions, onClose = { graphTypes = false })
+        if (reportsSheet) ReportsSheet(state, actions, onClose = { reportsSheet = false })
+        state.openReport?.let { r -> ReportScreen(r, state, actions, onOpenSource = actions.onOpenSource) }
 
         if (buildings) ModalBottomSheet(onDismissRequest = { buildings = false }, containerColor = Steel) {
             SheetHeader(tr("Projects", "Proyectos"), tr("Choose the project you're working in.", "Elige el proyecto en el que trabajas."))
@@ -561,6 +572,14 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                         Spacer(Modifier.height(22.dp))
                         SourceTags(state.tagsBySource[item.id].orEmpty(), state.tagCounts.map { it.name }, enabled = !locked,
                             onAdd = { actions.onAddTag(item.id, it) }, onRemove = { actions.onRemoveTag(item.id, it) })
+                        Spacer(Modifier.height(22.dp))
+                        DecisionRow(state.fileDecisions[item.id], emptyList(), !locked) { value, note -> actions.onDecide("archivo", item.id, value, note) }
+                        if (item.kind == UiKind.REPORT) {
+                            Spacer(Modifier.height(10.dp))
+                            TextButton(onClick = { actions.onExportDocLang(item.id) }, enabled = !locked, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("plantroom.export-doclang")) {
+                                Text(tr("Save as DocLang", "Guardar como DocLang"), color = Gold, fontSize = 13.sp)
+                            }
+                        }
                         if (item.synthetic) {
                             Spacer(Modifier.height(18.dp))
                             Text(tr("FICTIONAL DEMO SOURCE", "FUENTE FICTICIA DE DEMOSTRACIÓN"), fontFamily = OpenSauce, color = Muted, fontSize = 10.sp, letterSpacing = 1.sp)
@@ -814,7 +833,7 @@ private fun CitationCheck(check: UiCitationCheck, onSource: (UiItem) -> Unit) {
 }
 
 @Composable
-private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) -> Unit, onShare: () -> Unit) {
+private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) -> Unit, onShare: () -> Unit, onSave: () -> Unit = {}) {
     val notFound = answer.text.trim().startsWith("NOT_FOUND")
     val cited = JevClient.cites(answer.text).filter { it in 1..answer.sources.size }.sorted()
     Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 6.dp)
@@ -851,9 +870,15 @@ private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) 
             }
             Spacer(Modifier.height(6.dp))
             Text(if (answer.fromGraph) tr("Listed from the project graph, whose facts were extracted by AI. Check the cited pages.", "Lista del grafo del proyecto, cuyos datos fueron extraídos por IA. Revisa las páginas citadas.") else tr("Written by AI from your files. Check the cited pages.", "Escrito por IA a partir de tus archivos. Revisa las páginas citadas."), fontFamily = NotoSerif, color = Muted, fontSize = 11.sp)
-            TextButton(onClick = onShare, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("plantroom.share-answer")) {
-                if (incognito) { Glyph("incognito-on", Gold, Modifier.size(16.dp)); Spacer(Modifier.width(7.dp)) }
-                Text(if (incognito) tr("Share masked", "Compartir enmascarado") else tr("Share", "Compartir"), color = Gold, fontSize = 13.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onShare, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("plantroom.share-answer")) {
+                    if (incognito) { Glyph("incognito-on", Gold, Modifier.size(16.dp)); Spacer(Modifier.width(7.dp)) }
+                    Text(if (incognito) tr("Share masked", "Compartir enmascarado") else tr("Share", "Compartir"), color = Gold, fontSize = 13.sp)
+                }
+                Spacer(Modifier.width(18.dp))
+                TextButton(onClick = onSave, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("plantroom.save-answer")) {
+                    Text(tr("Save as report", "Guardar como informe"), color = Gold, fontSize = 13.sp)
+                }
             }
         }
     }
