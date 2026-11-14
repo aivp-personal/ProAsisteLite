@@ -499,6 +499,8 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                     }
                 }
                 HorizontalDivider(Modifier.padding(horizontal = 24.dp), color = Line)
+                AnswerModelSection(state, actions)
+                HorizontalDivider(Modifier.padding(horizontal = 24.dp), color = Line)
                 JevKeySection(state, actions)
                 HorizontalDivider(Modifier.padding(horizontal = 24.dp), color = Line)
                 ActionRow(tr("Import project pack", "Importar paquete de proyecto"), tr("Add a prepared collection from local storage", "Agrega una colección preparada desde el almacenamiento local"), "library", enabled = !locked) { setup = false; actions.onImportCorpus() }
@@ -602,7 +604,97 @@ private fun FilterSheet(state: UiState, actions: UiActions, onClose: () -> Unit)
     }
 }
 
-/** Gemini Nano's cited answer. Lists only the passages it cites (all of them if it cites none); each opens its source. */
+/**
+ * Who writes the current project's answers: Gemini Nano on the phone, or a model picked from OpenRouter's catalog.
+ * Incognito projects always stay on the phone, and a cloud model needs the saved OpenRouter key.
+ */
+@Composable
+private fun AnswerModelSection(state: UiState, actions: UiActions) {
+    val project = state.projects.firstOrNull { it.id == state.buildingId }
+    val chosen = project?.answerModel.orEmpty()
+    var picking by remember { mutableStateOf(false) }
+    val chosenName = state.catalog.all.firstOrNull { it.id == chosen }?.name ?: chosen.substringAfter('/')
+    Column(Modifier.padding(24.dp).testTag("plantroom.answer-model")) {
+        Eyebrow(tr("WHO WRITES ANSWERS · ${state.buildingId}", "QUIÉN ESCRIBE LAS RESPUESTAS · ${state.buildingId}"))
+        Spacer(Modifier.height(10.dp))
+        Text(if (chosen.isEmpty()) "Gemini Nano" else chosenName, fontSize = 20.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(6.dp))
+        val note = when {
+            chosen.isEmpty() -> tr("On this phone · nothing leaves it", "En este teléfono · nada sale de él")
+            project?.incognito == true -> tr("Incognito project · Gemini Nano answers on this phone instead", "Proyecto incógnito · Gemini Nano responde en este teléfono en su lugar")
+            !state.jevKeySaved -> tr("Needs the OpenRouter key below · until then Gemini Nano answers", "Necesita la clave de OpenRouter de abajo · mientras tanto responde Gemini Nano")
+            else -> tr("Through OpenRouter · each search sends your question and up to ${Store.PASSAGES} passages", "A través de OpenRouter · cada búsqueda envía tu pregunta y hasta ${Store.PASSAGES} pasajes")
+        }
+        Text(note, color = if (chosen.isNotEmpty() && (project?.incognito == true || !state.jevKeySaved)) Warning else Muted, fontSize = 13.sp, lineHeight = 18.sp)
+        Spacer(Modifier.height(14.dp))
+        Row {
+            OutlinedButton(onClick = { picking = true; actions.onLoadModels() }, enabled = !state.busy, shape = RoundedCornerShape(12.dp), modifier = Modifier.testTag("plantroom.pick-model")) {
+                Text(tr("Choose a model", "Elegir un modelo"))
+            }
+            if (chosen.isNotEmpty()) {
+                Spacer(Modifier.width(10.dp))
+                TextButton(onClick = { actions.onAnswerModel("") }, enabled = !state.busy) { Text(tr("Use Gemini Nano", "Usar Gemini Nano"), color = Gold) }
+            }
+        }
+    }
+    if (picking) ModelPicker(state.catalog, chosen, onPick = { actions.onAnswerModel(it); picking = false }, onClose = { picking = false })
+}
+
+@Composable
+private fun ModelPicker(catalog: UiCatalog, chosen: String, onPick: (String) -> Unit, onClose: () -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val words = query.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+    fun matches(m: UiModel) = words.all { w -> m.id.lowercase().contains(w) || m.name.lowercase().contains(w) }
+    androidx.compose.ui.window.Dialog(onDismissRequest = onClose, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        MaterialTheme(colorScheme = darkColorScheme(), typography = BrandTypography) {
+            Column(Modifier.fillMaxSize().background(Ink).statusBarsPadding().navigationBarsPadding().imePadding().padding(16.dp).testTag("plantroom.model-picker")) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(tr("Who writes answers", "Quién escribe las respuestas"), fontSize = 20.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                    TextButton(onClick = onClose) { Text(tr("Close", "Cerrar")) }
+                }
+                OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
+                    placeholder = { Text(tr("Search models: claude, deepseek, qwen…", "Buscar modelos: claude, deepseek, qwen…"), color = Muted, fontSize = 13.sp) },
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("plantroom.model-search"), shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Gold, unfocusedBorderColor = Line))
+                LazyColumn(Modifier.weight(1f)) {
+                    item { ModelRow("Gemini Nano", tr("On this phone · free · nothing leaves it", "En este teléfono · gratis · nada sale de él"), chosen.isEmpty()) { onPick("") } }
+                    if (catalog.loading) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 12.dp), color = Gold, trackColor = Line) }
+                    catalog.error?.let { e -> item { Text(e, color = Warning, fontSize = 12.sp, modifier = Modifier.padding(vertical = 12.dp)) } }
+                    val suggested = catalog.suggested.filter(::matches)
+                    if (suggested.isNotEmpty()) {
+                        item { Eyebrow(tr("SUGGESTED", "SUGERIDOS"), Gold); Spacer(Modifier.height(4.dp)) }
+                        items(suggested, key = { "s-" + it.id }) { m -> ModelRow(m.name, modelDetail(m), m.id == chosen) { onPick(m.id) } }
+                    }
+                    val rest = catalog.all.filter(::matches)
+                    if (rest.isNotEmpty()) {
+                        item { Spacer(Modifier.height(10.dp)); Eyebrow(tr("ALL MODELS ON OPENROUTER · ${rest.size}", "TODOS LOS MODELOS EN OPENROUTER · ${rest.size}")); Spacer(Modifier.height(4.dp)) }
+                        items(rest, key = { it.id }) { m -> ModelRow(m.name, modelDetail(m), m.id == chosen) { onPick(m.id) } }
+                    }
+                }
+                Text(tr("Prices are OpenRouter's, in US dollars per million tokens. A typical answer uses about 2,000 tokens in and 200 out.", "Los precios son de OpenRouter, en dólares por millón de tokens. Una respuesta típica usa unos 2.000 tokens de entrada y 200 de salida."),
+                    color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 8.dp))
+            }
+        }
+    }
+}
+
+private fun modelDetail(m: UiModel): String {
+    fun price(v: Double) = if (v == 0.0) "0" else if (v < 1) String.format(Locale.US, "%.2f", v) else String.format(Locale.US, "%.1f", v)
+    val context = if (m.context >= 1_000_000) "${m.context / 1_000_000}M" else "${m.context / 1000}K"
+    return "${m.id} · $${price(m.inputPerMillion)} / $${price(m.outputPerMillion)} · $context"
+}
+
+@Composable
+private fun ModelRow(name: String, detail: String, selected: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(name, color = if (selected) Gold else Mist, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(detail, color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (selected) Text("✓", color = Gold, fontSize = 16.sp)
+    }
+}
+
 /** The OpenRouter key for Jev. The key itself never enters UiState and the field is cleared once it's saved. */
 @Composable
 private fun JevKeySection(state: UiState, actions: UiActions) {
@@ -633,7 +725,7 @@ private fun JevKeySection(state: UiState, actions: UiActions) {
                 Spacer(Modifier.width(12.dp))
                 Switch(state.jevEnabled, actions.onJevEnabled, enabled = !state.busy, modifier = Modifier.testTag("plantroom.jev-enabled"))
             }
-            Text(tr("Off: searches send nothing. The key is still used when you build a graph with DeepSeek.", "Desactivado: las búsquedas no envían nada. La clave se sigue usando al construir un grafo con DeepSeek."), color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
+            Text(tr("Off: Jev checks nothing. The key is still used to build a graph with DeepSeek, and for answers when a project's answers are written by an OpenRouter model.", "Desactivado: Jev no revisa nada. La clave se sigue usando para construir un grafo con DeepSeek y para las respuestas cuando un proyecto las escribe con un modelo de OpenRouter."), color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
             Spacer(Modifier.height(14.dp))
             OutlinedButton(onClick = actions.onRemoveJevKey, shape = RoundedCornerShape(12.dp), modifier = Modifier.testTag("plantroom.jev-remove")) { Text(tr("Remove key", "Eliminar clave")) }
         } else {
@@ -699,7 +791,11 @@ private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) 
     val cited = JevClient.cites(answer.text).filter { it in 1..answer.sources.size }.sorted()
     Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 6.dp)
         .background(Steel, RoundedCornerShape(14.dp)).padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.answer")) {
-        Eyebrow(if (answer.fromGraph) tr("Answer · from the project graph", "Respuesta · del grafo del proyecto") else tr("Answer · Gemini Nano on this phone", "Respuesta · Gemini Nano en este teléfono"), Gold)
+        Eyebrow(when {
+            answer.fromGraph -> tr("Answer · from the project graph", "Respuesta · del grafo del proyecto")
+            answer.cloud -> tr("Answer · ${answer.writer} via OpenRouter", "Respuesta · ${answer.writer} vía OpenRouter")
+            else -> tr("Answer · Gemini Nano on this phone", "Respuesta · Gemini Nano en este teléfono")
+        }, Gold)
         Spacer(Modifier.height(9.dp))
         // A flagged answer shows its warning first, so it's read before the sentence it's about.
         val flagged = answer.check?.takeIf { it.issues.isNotEmpty() }
@@ -713,6 +809,7 @@ private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) 
             if (answer.status.isNotBlank()) { Spacer(Modifier.height(7.dp)); Text(answer.status, color = Muted, fontSize = 11.sp) }
         } else if (answer.status.isNotBlank()) Text(answer.status, color = Warning, fontSize = 12.sp, lineHeight = 18.sp)
         if (flagged == null) answer.check?.let { CitationCheck(it, onSource) }
+        if (answer.writerNote.isNotBlank()) { Spacer(Modifier.height(8.dp)); Text(answer.writerNote, color = if (answer.writerFailed) Warning else Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.testTag("plantroom.writer-note")) }
         if (answer.jevNote.isNotBlank()) { Spacer(Modifier.height(8.dp)); Text(answer.jevNote, color = if (answer.jevFailed) Warning else Muted, fontSize = 11.sp, lineHeight = 16.sp) }
         if (!answer.working && !notFound && answer.text.isNotBlank()) {
             Spacer(Modifier.height(10.dp))

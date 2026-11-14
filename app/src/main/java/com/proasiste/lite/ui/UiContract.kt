@@ -6,8 +6,15 @@ enum class UiKind(private val en: String, private val es: String) {
 }
 
 /** A project: number in PXX form (also the storage key for its sources) and a display name.
- *  [incognito] masks personal data in anything shared out of the project. */
-data class UiProject(val id: String, val name: String, val incognito: Boolean = false)
+ *  [incognito] masks personal data in anything shared out of the project, and keeps answers on the phone.
+ *  [answerModel] is the OpenRouter model that writes its answers; "" means Gemini Nano on the phone. */
+data class UiProject(val id: String, val name: String, val incognito: Boolean = false, val answerModel: String = "")
+
+/** A model the user can pick to write answers. Prices are US dollars per million tokens. */
+data class UiModel(val id: String, val name: String, val inputPerMillion: Double, val outputPerMillion: Double, val context: Int)
+
+/** OpenRouter's catalog for the model picker: [suggested] first, then [all], newest first. */
+data class UiCatalog(val suggested: List<UiModel> = emptyList(), val all: List<UiModel> = emptyList(), val loading: Boolean = false, val error: String? = null)
 
 /** Text about to leave the app; [masked] counts the replacements made, [note] explains any limits. */
 data class UiShare(val text: String = "", val masked: Int = 0, val incognito: Boolean = false, val note: String = "", val preparing: Boolean = true)
@@ -63,6 +70,14 @@ data class UiAnswer(
     val check: UiCitationCheck? = null,
     /** Listed directly from the project graph, with no model writing it. */
     val fromGraph: Boolean = false,
+    /** Who wrote it: "Gemini Nano" or the OpenRouter model's name. */
+    val writer: String = "Gemini Nano",
+    /** Written by an OpenRouter model, so the question and passages left the phone. */
+    val cloud: Boolean = false,
+    /** What left the phone and what it cost, or why the chosen model wasn't used. */
+    val writerNote: String = "",
+    /** The note is a warning: the chosen model failed and Nano answered instead. */
+    val writerFailed: Boolean = false,
 )
 
 /** A graph fact held back by the checks, or a kept one drawn for a spot check, waiting for the steward's decision. */
@@ -150,6 +165,8 @@ data class UiState(
     val jevEnabled: Boolean = false,
     val jevKeyChecking: Boolean = false,
     val jevKeyError: String? = null,
+    /** OpenRouter's model list, loaded when the picker opens. */
+    val catalog: UiCatalog = UiCatalog(),
 )
 
 data class UiActions(
@@ -170,6 +187,10 @@ data class UiActions(
     val onSaveJevKey: (String) -> Unit = {},
     val onRemoveJevKey: () -> Unit = {},
     val onJevEnabled: (Boolean) -> Unit = {},
+    /** Sets who writes the current project's answers: an OpenRouter model id, or "" for Gemini Nano. */
+    val onAnswerModel: (String) -> Unit = {},
+    /** Loads OpenRouter's model list for the picker. */
+    val onLoadModels: () -> Unit = {},
     val onQuery: (String) -> Unit = {},
     val onSearch: () -> Unit = {},
     val onImportModel: () -> Unit = {},

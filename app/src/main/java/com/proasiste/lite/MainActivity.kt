@@ -69,6 +69,7 @@ class MainActivity:ComponentActivity(){
                 onToggleIncognito=model::toggleIncognito,onLanguage=model::setSpanish,onDeleteSource={stopAudio();model.deleteSource(it)},
                 onShareAnswer=model::shareAnswer,onDismissShare=model::dismissShare,
                 onSaveJevKey=model::saveJevKey,onRemoveJevKey=model::removeJevKey,onJevEnabled=model::setJevEnabled,
+                onAnswerModel=model::setAnswerModel,onLoadModels=model::loadModels,
                 
                 onConfirmShare={text->model.dismissShare();startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,text),tr("Share answer", "Compartir respuesta")))},onQuery=model::setQuery,onSearch=model::search,
                 onImportModel={modelPicker.launch(arrayOf("*/*"))},onImportCorpus={packPicker.launch(arrayOf("application/zip","application/octet-stream"))},

@@ -8,7 +8,7 @@ ProAsisteLocal (`com.plantroom.pocket`) loads every chunk to search, which break
 | # | Step | Status |
 |---|---|---|
 | 1 | Getting thousands of files in | **Done** (`847aa52`, 2026-11-13) |
-| 2 | Choosing the model for answers | Next |
+| 2 | Choosing the model for answers | **Done** (2026-11-13) |
 | 3 | Sorting and tagging | Not started |
 | 4 | DocLang reader, then graph tables the user guides | Not started |
 | 5 | Skills and actions on files, saved reports and decisions | Not started |
@@ -29,15 +29,23 @@ ProAsisteLocal (`com.plantroom.pocket`) loads every chunk to search, which break
 Still to check at full scale: a run of thousands of files, and search speed in a project that large. OCR is not built:
 scans need OCR on the computer (FineReader), then a new import.
 
-## 2. Choosing the model for answers
+## 2. Choosing the model for answers — done
 
-- In settings, per project: answers written by Gemini Nano on the phone, or by a model chosen from OpenRouter
-  (DeepSeek, Claude, Qwen…), with the key already saved.
-- Incognito projects always stay on the phone.
-- Each answer says which model wrote it and what left the phone.
+- Settings → "Who writes answers" sets, per project, Gemini Nano on the phone or any text model in OpenRouter's live
+  catalog (`/api/v1/models`, no key needed to list it), searchable, with prices per million tokens. The newest Claude
+  Opus, Claude Sonnet, DeepSeek, Qwen and Gemini are suggested first. The choice is stored with the project.
+- `CloudAnswerer` sends the same prompt and citation format Nano gets (up to five sentences instead of three), streams
+  the answer, and sends no sampling settings (some current models, Claude Opus 5.5 among them, reject them). Jev's
+  checks and the citation fixes work unchanged.
+- The card names the model and says what left the phone and what it cost ("Your question and 6 passages went to
+  OpenRouter (provider) · $0.0001"). The shared text names the model too.
+- Incognito projects always answer with Nano, and say so. Without a saved key, or when OpenRouter fails, Nano answers
+  and the card says why.
 
-To decide: which OpenRouter models to offer; whether Nano stays the default; whether passages may leave the phone
-outside incognito without asking each time.
+Decisions taken: Nano stays the default for every project; the whole catalog is offered, with suggestions first;
+choosing a cloud model for a project is the consent, so searches don't ask each time, but every answer states what was
+sent. Checked on the Fold: DeepSeek V4.1 Flash answered a question on P90 with citations for $0.0001; with incognito on,
+Nano answered and nothing left the phone.
 
 ## 3. Sorting and tagging
 

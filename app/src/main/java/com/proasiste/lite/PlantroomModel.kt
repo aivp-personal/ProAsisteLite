@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.compose.runtime.*
+import com.proasiste.lite.runtime.CloudAnswerer
 import com.proasiste.lite.runtime.GemmaEmbedder
 import com.proasiste.lite.runtime.JevClient
 import com.proasiste.lite.runtime.KeyVault
@@ -46,6 +47,9 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     private val nano=NanoAnswerer()
     private val pseudonymizer=Pseudonymizer(nano)
     private val jev=JevClient()
+    private val cloud=CloudAnswerer()
+    /** OpenRouter's catalog, once loaded; used for model names. */
+    private var catalogModels:List<CloudAnswerer.Model> = emptyList()
     private val jevVault=KeyVault(prefs)
     private var answerJob:Job?=null
     private var shareJob:Job?=null
@@ -82,7 +86,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     private fun projectIds()=state.projects.map{it.id}.toSet()
     private fun loadProjects():List<UiProject>{
         val raw=prefs.getString("projects",null)?:return SAMPLE_PROJECTS
-        return runCatching{val a=JSONArray(raw);(0 until a.length()).map{a.getJSONObject(it).let{j->UiProject(j.getString("id"),j.getString("name"),j.optBoolean("incognito",false))}}}.getOrNull()?.takeIf{it.isNotEmpty()}?:SAMPLE_PROJECTS
+        return projectsFromJson(raw)?:SAMPLE_PROJECTS
     }
     /** Returns an error message, or null when the project was created and selected. */
     fun createProject(number:String,name:String):String?{
@@ -95,7 +99,25 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         val projects=(state.projects+UiProject(id,title)).sortedBy{it.id.drop(1).toInt()}
         saveProjects(projects);state=state.copy(projects=projects);setBuilding(id);return null
     }
-    private fun saveProjects(projects:List<UiProject>){prefs.edit().putString("projects",JSONArray(projects.map{JSONObject().put("id",it.id).put("name",it.name).put("incognito",it.incognito)}).toString()).apply()}
+    private fun saveProjects(projects:List<UiProject>){prefs.edit().putString("projects",projectsToJson(projects)).apply()}
+    /** Sets who writes this project's answers: an OpenRouter model id, or "" for Gemini Nano on the phone. */
+    fun setAnswerModel(model:String){
+        val id=state.buildingId
+        val projects=state.projects.map{if(it.id==id)it.copy(answerModel=model.trim())else it};saveProjects(projects);stopAnswer()
+        state=state.copy(projects=projects,status=if(model.isBlank())tr("$id answers are written by Gemini Nano on this phone","Las respuestas de $id las escribe Gemini Nano en este teléfono")
+            else tr("$id answers are written by ${CloudAnswerer.displayName(model,catalogModels)} through OpenRouter","Las respuestas de $id las escribe ${CloudAnswerer.displayName(model,catalogModels)} a través de OpenRouter"))
+    }
+    /** Loads OpenRouter's model list once per session for the picker. It needs no key and sends nothing about the user. */
+    fun loadModels(){
+        if(state.catalog.loading||catalogModels.isNotEmpty())return
+        state=state.copy(catalog=UiCatalog(loading=true))
+        viewModelScope.launch{
+            try{catalogModels=cloud.models();state=state.copy(catalog=UiCatalog(CloudAnswerer.suggestions(catalogModels).map{it.ui()},catalogModels.map{it.ui()}))}
+            catch(e:CancellationException){throw e}
+            catch(e:Exception){state=state.copy(catalog=UiCatalog(error=(e as? CloudAnswerer.CloudException)?.message?:tr("Couldn't load OpenRouter's model list. Check your connection.","No se pudo cargar la lista de modelos de OpenRouter. Revisa tu conexión.")))}
+        }
+    }
+    private fun CloudAnswerer.Model.ui()=UiModel(id,name,inputPerMillion,outputPerMillion,context)
     fun setSpanish(on:Boolean){L10n.spanish=on;prefs.edit().putBoolean("spanish",on).apply();state=state.copy(status="")}
     fun toggleIncognito(id:String){
         val projects=state.projects.map{if(it.id==id)it.copy(incognito=!it.incognito)else it};saveProjects(projects)
@@ -117,7 +139,10 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         val plain=buildString{
             appendLine(tr("Q: ${state.query.trim()}", "P: ${state.query.trim()}"));appendLine();appendLine(answer.text.trim());appendLine()
             appendLine(tr("Sources:", "Fuentes:"));cited.forEach{n->val s=answer.sources[n-1];appendLine("[$n] ${s.title}, ${s.sourceLocation}");appendLine("    \"${s.excerpt.trim()}\"")}
-            appendLine();append(if(answer.fromGraph)tr("Listed from the project graph, whose facts were extracted by AI.", "Lista del grafo del proyecto, cuyos datos fueron extraídos por IA.") else tr("Answer written by Gemini Nano on the phone from the cited passages.", "Respuesta escrita por Gemini Nano en el teléfono a partir de los pasajes citados."))
+            appendLine();append(when{
+                answer.fromGraph->tr("Listed from the project graph, whose facts were extracted by AI.", "Lista del grafo del proyecto, cuyos datos fueron extraídos por IA.")
+                answer.cloud->tr("Answer written by ${answer.writer} (through OpenRouter) from the cited passages.", "Respuesta escrita por ${answer.writer} (a través de OpenRouter) a partir de los pasajes citados.")
+                else->tr("Answer written by Gemini Nano on the phone from the cited passages.", "Respuesta escrita por Gemini Nano en el teléfono a partir de los pasajes citados.")})
         }
         if(!incognito){state=state.copy(share=UiShare(plain,preparing=false));return}
         state=state.copy(share=UiShare(incognito=true))
@@ -430,15 +455,40 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
             val passages=rerank(question,result)?:return@launch
             // A graph fact was written from the page, not quoted from it, so its citation says so.
             val sources=passages.map{it.source.ui(it.score,it.chunk.text,if(it.chunk.ordinal==GRAPH_FACT_ORDINAL)tr("Page ${it.chunk.page} · graph fact", "Página ${it.chunk.page} · dato del grafo") else tr("Page ${it.chunk.page}", "Página ${it.chunk.page}"))}
-            state=state.copy(answer=state.answer?.copy(status=tr("Gemini Nano is reading ${passages.size} passages…", "Gemini Nano está leyendo ${passages.size} pasajes…"),sources=sources))
+            state=state.copy(answer=state.answer?.copy(sources=sources))
             // With Jev on, the answer stays hidden until it's checked, so a sentence that gets removed is never shown.
             val key=jevKey();var written=""
-            try{
-                nano.answer(question,passages.map{NanoAnswerer.Passage(it.source.title,it.chunk.page,it.chunk.text)},
-                    onStatus={s->state=state.copy(answer=state.answer?.copy(status=s))},
-                    onText={t->written=NanoAnswerer.fixCitations(t,passages.size);if(key==null)state=state.copy(answer=state.answer?.copy(text=written))})
-            }catch(e:CancellationException){throw e}
-            catch(e:Exception){state=state.copy(answer=state.answer?.copy(working=false,status=tr("Gemini Nano could not answer: ","Gemini Nano no pudo responder: ")+(e.message?.take(160)?:tr("unknown error","error desconocido"))));return@launch}
+            val given=passages.map{NanoAnswerer.Passage(it.source.title,it.chunk.page,it.chunk.text)}
+            val onText:(String)->Unit={t->written=NanoAnswerer.fixCitations(t,passages.size);if(key==null)state=state.copy(answer=state.answer?.copy(text=written))}
+            // The project's chosen model writes the answer when it may: a key is saved and the project isn't incognito.
+            // Otherwise, or if it fails, Gemini Nano answers on the phone and the card says why.
+            val chosen=state.projects.firstOrNull{it.id==state.buildingId}?.answerModel.orEmpty()
+            val cloudKey=if(chosen.isNotEmpty())cloudKey() else null
+            var wroteInCloud=false
+            if(chosen.isNotEmpty()&&cloudKey==null)state=state.copy(answer=state.answer?.copy(writerNote=
+                if(incognito)tr("Incognito project: Gemini Nano answered on this phone and nothing left it.","Proyecto incógnito: Gemini Nano respondió en este teléfono y nada salió de él.")
+                else tr("No OpenRouter key saved, so Gemini Nano answered on this phone.","No hay clave de OpenRouter guardada, así que Gemini Nano respondió en este teléfono.")))
+            if(cloudKey!=null){
+                val name=CloudAnswerer.displayName(chosen,catalogModels)
+                state=state.copy(answer=state.answer?.copy(writer=name,cloud=true,status=tr("$name is reading ${passages.size} passages…", "$name está leyendo ${passages.size} pasajes…")))
+                try{
+                    val r=cloud.answer(cloudKey,chosen,question,given,onText)
+                    wroteInCloud=true
+                    val cost=if(r.cost>0)" · $"+"%.4f".format(java.util.Locale.US,r.cost) else ""
+                    state=state.copy(answer=state.answer?.copy(writerNote=tr("Your question and ${passages.size} passages went to OpenRouter${if(r.provider.isNotBlank())" (${r.provider})" else ""}$cost","Tu pregunta y ${passages.size} pasajes pasaron por OpenRouter${if(r.provider.isNotBlank())" (${r.provider})" else ""}$cost")))
+                }catch(e:CancellationException){throw e}
+                catch(e:Exception){
+                    written=""
+                    state=state.copy(answer=state.answer?.copy(text="",writer="Gemini Nano",cloud=false,writerFailed=true,
+                        writerNote=tr("$name couldn't answer (${e.message?.take(120)?:"unknown error"}), so Gemini Nano answered on this phone.","$name no pudo responder (${e.message?.take(120)?:"error desconocido"}), así que Gemini Nano respondió en este teléfono.")))
+                }
+            }
+            if(!wroteInCloud){
+                state=state.copy(answer=state.answer?.copy(status=tr("Gemini Nano is reading ${passages.size} passages…", "Gemini Nano está leyendo ${passages.size} pasajes…")))
+                try{nano.answer(question,given,onStatus={s->state=state.copy(answer=state.answer?.copy(status=s))},onText=onText)}
+                catch(e:CancellationException){throw e}
+                catch(e:Exception){state=state.copy(answer=state.answer?.copy(working=false,status=tr("Gemini Nano could not answer: ","Gemini Nano no pudo responder: ")+(e.message?.take(160)?:tr("unknown error","error desconocido"))));return@launch}
+            }
             if(key==null||written.trim().startsWith("NOT_FOUND")){state=state.copy(answer=state.answer?.copy(text=written,working=false,status=""));return@launch}
             state=state.copy(answer=state.answer?.copy(status=tr("Jev is checking the citations…", "Jev está comprobando las citas…")))
             val (text,check)=checkCitations(key,written,passages,sources)
@@ -549,6 +599,9 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
                     (validDate(item.date) != null && (filters.dateFrom.isEmpty() || item.date >= filters.dateFrom) &&
                         (filters.dateTo.isEmpty() || item.date <= filters.dateTo)))
         }
+        /** Projects as stored in preferences, or null when [raw] can't be read. */
+        fun projectsFromJson(raw:String):List<UiProject>? =runCatching{val a=JSONArray(raw);(0 until a.length()).map{a.getJSONObject(it).let{j->UiProject(j.getString("id"),j.getString("name"),j.optBoolean("incognito",false),j.optString("answer_model",""))}}}.getOrNull()?.takeIf{it.isNotEmpty()}
+        fun projectsToJson(projects:List<UiProject>):String =JSONArray(projects.map{JSONObject().put("id",it.id).put("name",it.name).put("incognito",it.incognito).put("answer_model",it.answerModel)}).toString()
         fun copyBounded(input:java.io.InputStream,out:java.io.OutputStream,limit:Long){val buf=ByteArray(65536);var count=0L;while(true){val n=input.read(buf);if(n<0)break;count+=n;require(count<=limit){tr("File exceeds import size limit", "El archivo supera el límite de tamaño de importación")};out.write(buf,0,n)}}
     }
 }

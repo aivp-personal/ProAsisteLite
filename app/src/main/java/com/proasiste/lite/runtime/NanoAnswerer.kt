@@ -66,10 +66,11 @@ class NanoAnswerer {
         /** Exact reply the prompt asks for when the passages don't contain the answer. */
         const val NOT_FOUND = "NOT_FOUND"
 
-        fun prompt(question: String, passages: List<Passage>) = buildString {
+        /** The answering prompt. [sentences] is how long the answer may be; Nano's small model keeps it short. */
+        fun prompt(question: String, passages: List<Passage>, sentences: String = "1 to 3") = buildString {
             appendLine("You answer questions about the user's documents using ONLY the numbered passages below.")
             appendLine("Rules:")
-            appendLine("- Answer in the same language as the question, in 1 to 3 short sentences.")
+            appendLine("- Answer in the same language as the question, in $sentences short sentences.")
             appendLine("- After each fact, cite the passage number in square brackets, like [2].")
             appendLine("- Do not use outside knowledge. If the passages do not contain the answer, reply exactly: $NOT_FOUND")
             appendLine()
