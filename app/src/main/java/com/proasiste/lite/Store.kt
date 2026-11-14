@@ -194,7 +194,7 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
     /** Remove a project's sources, their search index, graph and the app's private copies of their files. Returns the source count. */
     fun deleteProject(project:String):Int{
         val doomed=sources(project)
-        writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("graph_schemas","building=?",arrayOf(project));delete("decisions","building=?",arrayOf(project));delete("reports","building=?",arrayOf(project));delete("action_runs","building=?",arrayOf(project));delete("tag_rules","building=?",arrayOf(project));delete("tags","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
+        writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("graph_schemas","building=?",arrayOf(project));delete("decisions","building=?",arrayOf(project));delete("reports","building=?",arrayOf(project));delete("action_runs","building=?",arrayOf(project));delete("tag_rules","building=?",arrayOf(project));delete("tags","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_aliases","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
         indexChanged()
         doomed.forEach{deleteCopy(it.path)}
         return doomed.size
@@ -338,6 +338,12 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
                 "CREATE TABLE action_runs(id INTEGER PRIMARY KEY,building TEXT NOT NULL,action TEXT NOT NULL,title TEXT NOT NULL,instructions TEXT NOT NULL DEFAULT '',report_id INTEGER NOT NULL,folder TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL)",
                 "CREATE TABLE action_queue(id INTEGER PRIMARY KEY,run_id INTEGER NOT NULL REFERENCES action_runs(id) ON DELETE CASCADE,source TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,status TEXT NOT NULL DEFAULT 'pendiente',note TEXT NOT NULL DEFAULT '')",
                 "CREATE INDEX action_queue_status ON action_queue(status,run_id)",
+            ),
+            // 11: names the user merged in the graph. Within one file, a fact naming [key] is linked to the node
+            // [type]/[name] instead, so a merge survives rebuilding the graph. Per file, because a word like
+            // "Appliance" means a different thing in each manual.
+            listOf(
+                "CREATE TABLE graph_aliases(building TEXT NOT NULL,source TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,key TEXT NOT NULL,type TEXT NOT NULL,name TEXT NOT NULL,PRIMARY KEY(building,source,key))",
             ),
         )
         private val SOURCE_COLUMNS=arrayOf("id","path","type","building","asset","date","title","synthetic","indexed","error","pages","no_text_pages")

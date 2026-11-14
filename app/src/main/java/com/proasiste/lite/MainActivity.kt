@@ -81,7 +81,7 @@ class MainActivity:ComponentActivity(){
                 onAddLinkType=model::addLinkType,onRemoveLinkType=model::removeLinkType,onLegalPreset=model::useLegalPreset,
                 onSaveAnswer=model::saveAnswer,onOpenReport=model::openReport,onCloseReport=model::closeReport,onSaveReport=model::saveReport,onDeleteReport=model::deleteReport,
                 onNewNote=model::newNote,onDecide=model::decide,onExportReport=model::exportReport,onExportDecisions=model::exportDecisions,onExportFacts=model::exportFacts,onExportDocLang=model::exportDocLang,onRunAction=model::runAction,onSaveSkill=model::saveSkill,onDeleteSkill=model::deleteSkill,
-                onOpenGraph=model::openGraph,onCloseGraph=model::closeGraph,onOpenGraphFact={e->model.graphFactItem(e)?.let{document=it}},
+                onOpenGraph=model::openGraph,onCloseGraph=model::closeGraph,onMergeNames=model::mergeNames,onOpenGraphFact={e->model.graphFactItem(e)?.let{document=it}},
                 
                 onConfirmShare={text->model.dismissShare();startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,text),tr("Share answer", "Compartir respuesta")))},onQuery=model::setQuery,onSearch=model::search,
                 onImportModel={modelPicker.launch(arrayOf("*/*"))},onImportCorpus={packPicker.launch(arrayOf("application/zip","application/octet-stream"))},

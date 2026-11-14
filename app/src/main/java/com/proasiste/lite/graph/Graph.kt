@@ -40,11 +40,16 @@ enum class Direction { OUT, IN, BOTH }
 class Graph(private val store: Store) {
     private val db: SQLiteDatabase get() = store.writableDatabase
 
-    /** Returns the node for this name, creating it the first time. The first spelling seen is kept as its name. */
-    fun upsertNode(project: String, type: String, name: String): GraphNode {
-        val cleanType = type.trim()
-        val cleanName = name.trim().replace(WHITESPACE, " ")
+    /**
+     * Returns the node for this name, creating it the first time. The first spelling seen is kept as its name.
+     * In [sourceId], a name the user merged into another gives that other node.
+     */
+    fun upsertNode(project: String, type: String, name: String, sourceId: String? = null): GraphNode {
+        var cleanType = type.trim()
+        var cleanName = name.trim().replace(WHITESPACE, " ")
         require(cleanType.isNotEmpty() && cleanName.isNotEmpty()) { "A node needs a type and a name." }
+        if (sourceId != null) db.rawQuery("SELECT type, name FROM graph_aliases WHERE building = ? AND source = ? AND key = ?", arrayOf(project, sourceId, keyOf(cleanName)))
+            .use { if (it.moveToFirst()) { cleanType = it.getString(0); cleanName = it.getString(1) } }
         val key = keyOf(cleanName)
         require(key.isNotEmpty()) { "A node name needs letters or digits." }
         db.insertWithOnConflict("graph_nodes", null, ContentValues().apply {
@@ -86,6 +91,41 @@ class Graph(private val store: Store) {
     }
 
     /** Every link touching [node], in either direction, with its source and page. */
+    /**
+     * Merges the names [others] into [keep] (all as [keyOf] keys): in each file that mentions [keep], facts about any of
+     * them now point at [keep]'s node, and the file remembers the merge so rebuilding its graph keeps it. Files that
+     * don't mention [keep] are left alone, since a name like "Appliance" means something else there. Spellings of
+     * [keep] under other types join it too. Returns how many facts moved.
+     */
+    fun merge(project: String, keep: String, others: Collection<String>): Int = db.inTransaction {
+        fun ids(sql: String, vararg args: String) = rawQuery(sql, args).use { c -> buildList { while (c.moveToNext()) add(c.getLong(0)) } }
+        val target = rawQuery(
+            """SELECT n.id, n.type, n.key, n.name FROM graph_nodes n WHERE n.building = ? AND n.key = ?
+               ORDER BY (SELECT COUNT(*) FROM graph_edges e WHERE e.from_id = n.id OR e.to_id = n.id) DESC, n.id LIMIT 1""", arrayOf(project, keep),
+        ).use { if (it.moveToFirst()) node(it, 0) else null } ?: return@inTransaction 0
+        val keys = (others + keep).toSet()
+        val marks = keys.joinToString(",") { "?" }
+        val victims = ids("SELECT id FROM graph_nodes WHERE building = ? AND key IN ($marks) AND id <> ?", project, *keys.toTypedArray(), target.id.toString())
+        val sources = rawQuery("SELECT DISTINCT e.source FROM graph_edges e JOIN graph_nodes n ON n.id IN (e.from_id, e.to_id) WHERE n.building = ? AND n.key = ?", arrayOf(project, keep))
+            .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+        var moved = 0
+        if (victims.isNotEmpty()) for (s in sources) {
+            val v = victims.joinToString(",")
+            for (end in listOf("from_id", "to_id")) {
+                execSQL("UPDATE OR IGNORE graph_edges SET $end = ? WHERE source = ? AND $end IN ($v)", arrayOf(target.id, s))
+                moved += rawQuery("SELECT changes()", null).use { it.moveToFirst(); it.getInt(0) }
+            }
+            // Facts that now say the same thing twice, and a name linked to itself ("Egg Cooker is part of Deluxe Egg Cooker").
+            execSQL("DELETE FROM graph_edges WHERE source = ? AND (from_id IN ($v) OR to_id IN ($v))", arrayOf(s))
+            execSQL("DELETE FROM graph_edges WHERE source = ? AND from_id = ? AND to_id = ?", arrayOf(s, target.id, target.id))
+        }
+        for (s in sources) for (k in keys) insertWithOnConflict("graph_aliases", null, ContentValues().apply {
+            put("building", project); put("source", s); put("key", k); put("type", target.type); put("name", target.name)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+        execSQL("DELETE FROM graph_nodes WHERE building = ? AND NOT EXISTS (SELECT 1 FROM graph_edges e WHERE e.from_id = graph_nodes.id OR e.to_id = graph_nodes.id)", arrayOf(project))
+        moved
+    }
+
     /** Every link in a project, or in one of its files when [sourceId] is given, for drawing the graph. */
     fun view(project: String, sourceId: String? = null): List<ViewEdge> = db.rawQuery(
         """SELECT f.id, f.type, f.key, f.name, t.id, t.type, t.key, t.name, e.type, e.source, e.page, e.fact, e.place
@@ -236,8 +276,8 @@ class Graph(private val store: Store) {
             // A new extraction supersedes what the old one left to review; decided items stay as the record.
             execSQL("DELETE FROM graph_review WHERE source = ? AND status = 'pendiente'", arrayOf(sourceId))
             all.zip(vectors).count { (f, vector) ->
-                val from = upsertNode(project, f.subjectType, f.subject)
-                val to = upsertNode(project, f.objectType, f.obj)
+                val from = upsertNode(project, f.subjectType, f.subject, sourceId)
+                val to = upsertNode(project, f.objectType, f.obj, sourceId)
                 addEdge(project, from, to, f.relation, sourceId, f.page, f.statement, vector, f.extractor, f.place)
             }
         }
@@ -311,8 +351,8 @@ class Graph(private val store: Store) {
         require(fact.complete()) { "An approved fact needs a page, both names and a statement." }
         val vector = embed(fact.statement)
         db.inTransaction {
-            val from = upsertNode(project, fact.subjectType, fact.subject)
-            val to = upsertNode(project, fact.objectType, fact.obj)
+            val from = upsertNode(project, fact.subjectType, fact.subject, item.sourceId)
+            val to = upsertNode(project, fact.objectType, fact.obj, item.sourceId)
             addEdge(project, from, to, fact.relation, item.sourceId, fact.page, fact.statement, vector, fact.extractor, fact.place)
             update("graph_review", ContentValues().apply {
                 put("status", if (edited == null) "aprobado" else "corregido"); put("decided_at", System.currentTimeMillis())
@@ -375,8 +415,8 @@ class Graph(private val store: Store) {
         val vector = embed(fact.statement)
         db.inTransaction {
             delete("graph_edges", "id = ?", arrayOf(edgeId.toString()))
-            val from = upsertNode(project, fact.subjectType, fact.subject)
-            val to = upsertNode(project, fact.objectType, fact.obj)
+            val from = upsertNode(project, fact.subjectType, fact.subject, item.sourceId)
+            val to = upsertNode(project, fact.objectType, fact.obj, item.sourceId)
             addEdge(project, from, to, fact.relation, item.sourceId, fact.page, fact.statement, vector, fact.extractor, fact.place)
             execSQL("DELETE FROM graph_nodes WHERE building = ? AND NOT EXISTS (SELECT 1 FROM graph_edges e WHERE e.from_id = graph_nodes.id OR e.to_id = graph_nodes.id)", arrayOf(project))
             recordDecision(project, item, "página", "corregido", fact)

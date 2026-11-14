@@ -59,6 +59,45 @@ class GraphPictureTest {
         assertTrue(p.links.all { it.from < 10 && it.to < 10 })
     }
 
+    @Test fun mergingStaysInItsFilesAndSurvivesARebuild() {
+        val egg = listOf(
+            fact(4, "appliance", "DASH egg cooker", "HAS_PART", "part", "Lid"),
+            fact(4, "product", "Deluxe Egg Cooker", "HAS_PART", "part", "Heating plate"),
+            fact(4, "Appliance", "Appliance", "MUST_BE_PLACED_ON", "surface", "Stable, dry surface"),
+            fact(5, "part", "Egg Cooker", "IS_PART_OF", "product", "Deluxe Egg Cooker"),
+            fact(6, "product", "Deluxe Egg Cooker", "HAS_PART", "part", "Lid"),
+        )
+        graph.replaceFacts("P03", "A", egg, ::embed)
+        graph.replaceFacts("P03", "B", listOf(fact(2, "Appliance", "Appliance", "HAS_PART", "part", "Dust cup")), ::embed)
+
+        val moved = graph.merge("P03", "dash egg cooker", listOf("deluxe egg cooker", "appliance", "egg cooker"))
+        assertTrue(moved > 0)
+        fun keys(src: String) = GraphPicture.build(graph.view("P03", src)).nodes.map { it.key }.toSet()
+        assertEquals(setOf("dash egg cooker", "lid", "heating plate", "stable dry surface"), keys("A"))
+        // The vacuum's "Appliance" is still the vacuum.
+        assertEquals(setOf("appliance", "dust cup"), keys("B"))
+        val a = GraphPicture.build(graph.view("P03", "A"))
+        // The self-link is gone; "has part Lid" on two pages stays two facts.
+        assertEquals(4, a.links.size); assertTrue(a.links.none { it.from == it.to })
+
+        // Rebuilding file A applies the merge again; file B is untouched.
+        graph.replaceFacts("P03", "A", egg, ::embed)
+        assertEquals(setOf("dash egg cooker", "lid", "heating plate", "stable dry surface"), keys("A"))
+        assertEquals("DASH egg cooker", GraphPicture.build(graph.view("P03", "A")).nodes.first().name)
+        assertEquals(setOf("appliance", "dust cup"), keys("B"))
+        assertEquals(0, graph.merge("P03", "nothing here", listOf("lid")))
+    }
+
+    @Test fun schemaTenUpgrades() {
+        val name = "aliases-upgrade.db"
+        context.deleteDatabase(name)
+        android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath(name).apply { parentFile?.mkdirs() }, null).use { db ->
+            Store.MIGRATIONS.take(10).flatten().forEach(db::execSQL); db.version = 10
+        }
+        Store(context, name).use { s -> assertEquals(0, Graph(s).merge("P01", "a", listOf("b"))) }
+        context.deleteDatabase(name)
+    }
+
     @Test fun theLayoutIsRepeatableFillsTheSquareAndKeepsLinksShort() {
         // Two triangles joined by one link.
         val links = listOf(0 to 1, 1 to 2, 2 to 0, 3 to 4, 4 to 5, 5 to 3, 2 to 3)

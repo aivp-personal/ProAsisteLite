@@ -296,6 +296,8 @@ data class UiActions(
     /** Shows the project's graph, or one file's when a source id is given. */
     val onOpenGraph: (String?) -> Unit = {},
     val onCloseGraph: () -> Unit = {},
+    /** Merges names (graph keys) into the one to keep, in the files that mention it; the merge survives rebuilds. */
+    val onMergeNames: (String, List<String>) -> Unit = { _, _ -> },
     /** Opens the page a fact came from, its paragraph highlighted. */
     val onOpenGraphFact: (com.proasiste.lite.graph.ViewEdge) -> Unit = {},
     val onQuery: (String) -> Unit = {},

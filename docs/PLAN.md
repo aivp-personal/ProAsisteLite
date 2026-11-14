@@ -177,5 +177,14 @@ commonest types; lines are facts. Drag, pinch to zoom, find a name, tap a dot: i
 Large graphs show their 300 most linked names. The layout (`graph/GraphPicture.kt`, Fruchterman–Reingold) is worked out
 on the phone and comes out the same each time. Checked on the Fold with P03 (370 facts, 384 names).
 
-Not yet: merging names that mean the same thing ("DASH egg cooker", "Deluxe Egg Cooker"); places tighter than a whole
-page on manuals laid out in columns.
+**Merging names** (schema 11, `graph_aliases`): on a dot's facts, **Merge names…** picks the names that mean the same
+(those sharing a word are offered first; any other can be found). Their facts move to the dot kept, but only in files
+that mention it, so "Appliance" in the vacuum manual stays the vacuum. Each file remembers its merges, and rebuilding
+its graph applies them again. Done on the Fold: "Deluxe Egg Cooker", "DASH Deluxe Egg Cooker", "Egg Cooker" and
+"Appliance" merged into "DASH egg cooker" (84 facts, none lost).
+
+**Seeing relations**: pieces of the graph are laid out apart and packed in rows, so pairs and small clusters no longer
+shrink to touching dots. A tapped dot moves to the middle with one labelled branch per relation ("has important
+safeguard → ×22", "← may use with supervision"), the names it leads to fanned at the end.
+
+Not yet: undoing a merge; places tighter than a whole page on manuals laid out in columns.

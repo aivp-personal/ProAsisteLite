@@ -172,6 +172,14 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         }
     }
     fun closeGraph(){state=state.copy(graph=null)}
+    fun mergeNames(keep:String,others:List<String>){
+        if(others.isEmpty()||state.busy)return
+        val project=state.buildingId;val open=state.graph
+        viewModelScope.launch{
+            withContext(worker){graph.merge(project,keep,others)}
+            refresh();if(open!=null&&state.graph?.sourceId==open.sourceId)openGraph(open.sourceId)
+        }
+    }
     /** The file a fact came from, opening on its page with the fact's paragraph highlighted (or its words found). */
     fun graphFactItem(e:com.proasiste.lite.graph.ViewEdge):UiItem?=store.sources(state.buildingId).firstOrNull{it.id==e.sourceId}
         ?.ui(null,e.fact,tr("Page ${e.page}","Página ${e.page}"))
