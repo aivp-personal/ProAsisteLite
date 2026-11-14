@@ -160,6 +160,22 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     }
     fun openReport(id:Long){openReportId=id;refreshReports()}
     fun closeReport(){openReportId=null;state=state.copy(openReport=null)}
+    /** Lays out the project's graph, or one file's, away from the main thread. */
+    fun openGraph(sourceId:String?){
+        val project=state.buildingId
+        val sources=store.sources(project)
+        val title=sourceId?.let{id->sources.firstOrNull{it.id==id}?.title}?:tr("Graph · $project","Grafo · $project")
+        state=state.copy(graph=UiGraph(title,sourceId))
+        viewModelScope.launch{
+            val picture=withContext(Dispatchers.Default){com.proasiste.lite.graph.GraphPicture.build(withContext(worker){graph.view(project,sourceId)})}
+            if(state.graph?.sourceId==sourceId&&state.buildingId==project)state=state.copy(graph=state.graph?.copy(picture=picture,titles=sources.associate{it.id to it.title}))
+        }
+    }
+    fun closeGraph(){state=state.copy(graph=null)}
+    /** The file a fact came from, opening on its page with the fact's paragraph highlighted (or its words found). */
+    fun graphFactItem(e:com.proasiste.lite.graph.ViewEdge):UiItem?=store.sources(state.buildingId).firstOrNull{it.id==e.sourceId}
+        ?.ui(null,e.fact,tr("Page ${e.page}","Página ${e.page}"))
+        ?.copy(highlight=e.place.takeIf{p->DocPages.parse(p).any{it.first==e.page}}.orEmpty())
     fun saveReport(id:Long,title:String,body:String){
         val r=reports.get(id)?:return
         viewModelScope.launch{withContext(worker){reports.save(r.copy(title=title.ifBlank{r.title},body=body))};refreshReports()}

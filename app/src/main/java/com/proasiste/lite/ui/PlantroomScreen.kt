@@ -325,6 +325,15 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                         Glyph("arrow", Gold, Modifier.size(14.dp))
                     }
                 }
+                val graphFacts = state.docReview.values.sumOf { it.facts }
+                if (showEvidence && !searching && graphFacts > 0) item {
+                    // The project's graph, drawn: its own row, like the reports.
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).background(Steel, RoundedCornerShape(14.dp))
+                        .clickable(enabled = !locked) { actions.onOpenGraph(null) }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.graph-row"), verticalAlignment = Alignment.CenterVertically) {
+                        Text(tr("Graph · $graphFacts facts", "Grafo · $graphFacts datos"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Glyph("arrow", Gold, Modifier.size(14.dp))
+                    }
+                }
                 if (showEvidence && !searching && state.reviewCount > 0) item {
                     // Graph facts the checks held back wait here for the steward: its own row, not a kind of file.
                     Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).background(Steel, RoundedCornerShape(14.dp))
@@ -414,6 +423,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         if (reportsSheet) ReportsSheet(state, actions, onClose = { reportsSheet = false })
         if (actionsSheet) ActionsSheet(state, actions, onClose = { actionsSheet = false })
         state.openReport?.let { r -> ReportScreen(r, state, actions, onOpenSource = actions.onOpenSource) }
+        state.graph?.let { GraphScreen(it, actions) }
 
         if (buildings) ModalBottomSheet(onDismissRequest = { buildings = false }, containerColor = Steel) {
             SheetHeader(tr("Projects", "Proyectos"), tr("Choose the project you're working in.", "Elige el proyecto en el que trabajas."))
@@ -577,6 +587,12 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                             onAdd = { actions.onAddTag(item.id, it) }, onRemove = { actions.onRemoveTag(item.id, it) })
                         Spacer(Modifier.height(22.dp))
                         DecisionRow(state.fileDecisions[item.id], emptyList(), !locked) { value, note -> actions.onDecide("archivo", item.id, value, note) }
+                        if ((state.docReview[item.id]?.facts ?: 0) > 0) {
+                            Spacer(Modifier.height(10.dp))
+                            TextButton(onClick = { actions.onOpenGraph(item.id) }, enabled = !locked, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("plantroom.file-graph")) {
+                                Text(tr("See its graph · ${state.docReview[item.id]?.facts} facts", "Ver su grafo · ${state.docReview[item.id]?.facts} datos"), color = Gold, fontSize = 13.sp)
+                            }
+                        }
                         if (item.kind == UiKind.REPORT) {
                             Spacer(Modifier.height(10.dp))
                             TextButton(onClick = { actions.onExportDocLang(item.id) }, enabled = !locked, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("plantroom.export-doclang")) {

@@ -25,6 +25,9 @@ data class NewFact(val page: Int, val subjectType: String, val subject: String, 
 /** A link's fact ranked for a question. [similarity] is the fact sentence's cosine to the question. */
 data class GraphFact(val sourceId: String, val page: Int, val fact: String, val similarity: Float, val place: String = "")
 
+/** A link as drawn: both ends, its type, where it came from, and the fact with its place on the page. */
+data class ViewEdge(val from: GraphNode, val to: GraphNode, val type: String, val sourceId: String, val page: Int, val fact: String, val place: String)
+
 data class Reached(val node: GraphNode, val hops: Int)
 
 enum class Direction { OUT, IN, BOTH }
@@ -83,6 +86,14 @@ class Graph(private val store: Store) {
     }
 
     /** Every link touching [node], in either direction, with its source and page. */
+    /** Every link in a project, or in one of its files when [sourceId] is given, for drawing the graph. */
+    fun view(project: String, sourceId: String? = null): List<ViewEdge> = db.rawQuery(
+        """SELECT f.id, f.type, f.key, f.name, t.id, t.type, t.key, t.name, e.type, e.source, e.page, e.fact, e.place
+           FROM graph_edges e JOIN graph_nodes f ON f.id = e.from_id JOIN graph_nodes t ON t.id = e.to_id
+           WHERE f.building = ?${if (sourceId != null) " AND e.source = ?" else ""} ORDER BY e.source, e.page, e.id LIMIT $MAX_ROWS""",
+        listOfNotNull(project, sourceId).toTypedArray(),
+    ).use { c -> buildList { while (c.moveToNext()) add(ViewEdge(node(c, 0), node(c, 4), c.getString(8), c.getString(9), c.getInt(10), c.getString(11), c.getString(12) ?: "")) } }
+
     fun edgesOf(node: GraphNode): List<GraphEdge> = db.rawQuery(
         """SELECT f.id, f.type, f.key, f.name, t.id, t.type, t.key, t.name, e.type, e.source, e.page, e.fact
            FROM graph_edges e JOIN graph_nodes f ON f.id = e.from_id JOIN graph_nodes t ON t.id = e.to_id

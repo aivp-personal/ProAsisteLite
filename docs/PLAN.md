@@ -167,3 +167,15 @@ headings, lists, pictures, paragraphs and page breaks, 99.9% of words). Accented
 
 Not yet: Word output; reports in search; decisions on a page; actions on a single chosen file; AI actions with Gemini
 Nano (Android may block it in the background).
+
+## After the plan: seeing the graph
+
+**Done** (2026-11-14). A **Graph · N facts** row in the library opens the project's graph, and **See its graph** on a
+file's sheet opens that file's. Dots are names (one dot per name, whatever type the model gave it), coloured by the six
+commonest types; lines are facts. Drag, pinch to zoom, find a name, tap a dot: its facts are listed beside the graph
+(below it on a narrow screen) with file and page, and tapping one opens the page with the fact's paragraph highlighted.
+Large graphs show their 300 most linked names. The layout (`graph/GraphPicture.kt`, Fruchterman–Reingold) is worked out
+on the phone and comes out the same each time. Checked on the Fold with P03 (370 facts, 384 names).
+
+Not yet: merging names that mean the same thing ("DASH egg cooker", "Deluxe Egg Cooker"); places tighter than a whole
+page on manuals laid out in columns.

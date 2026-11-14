@@ -143,6 +143,12 @@ data class UiReview(val items: List<UiReviewItem>, val sample: Boolean = false, 
 /** What a document or page holds for review: [pending] held-back facts, [facts] in the graph, [unchecked] nobody stood behind yet. */
 data class UiPageStatus(val pending: Int = 0, val facts: Int = 0, val unchecked: Int = 0)
 
+/**
+ * The graph on screen: the whole project, or one file when [sourceId] is set. [picture] is null while it is laid out.
+ * [titles] names each file by source id, for the facts' "where it says so".
+ */
+data class UiGraph(val title: String, val sourceId: String? = null, val picture: com.proasiste.lite.graph.GraphPicture? = null, val titles: Map<String, String> = emptyMap())
+
 /** A background import or indexing run: the app stays usable meanwhile. [pausing] once Pause was tapped. */
 data class UiIndexing(val label: String, val progress: Float, val pausing: Boolean = false)
 
@@ -207,6 +213,8 @@ data class UiState(
     val reports: List<UiReport> = emptyList(),
     /** The report open on screen. */
     val openReport: UiReport? = null,
+    /** The graph open on screen. */
+    val graph: UiGraph? = null,
     /** The latest decision on each file of this project, by source id. */
     val fileDecisions: Map<String, UiDecision> = emptyMap(),
     /** A file waiting for the user to choose where to save it. */
@@ -285,6 +293,11 @@ data class UiActions(
     /** Saves a skill (name, instructions). */
     val onSaveSkill: (String, String) -> Unit = { _, _ -> },
     val onDeleteSkill: (Long) -> Unit = {},
+    /** Shows the project's graph, or one file's when a source id is given. */
+    val onOpenGraph: (String?) -> Unit = {},
+    val onCloseGraph: () -> Unit = {},
+    /** Opens the page a fact came from, its paragraph highlighted. */
+    val onOpenGraphFact: (com.proasiste.lite.graph.ViewEdge) -> Unit = {},
     val onQuery: (String) -> Unit = {},
     val onSearch: () -> Unit = {},
     val onImportModel: () -> Unit = {},
