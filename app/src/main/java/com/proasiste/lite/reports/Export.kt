@@ -106,6 +106,10 @@ object Export {
         } finally { doc.close() }
     }
 
-    /** A file name from a title: letters, digits and spaces, at most 60 characters. */
-    fun fileName(title: String, extension: String) = title.replace(Regex("[^\\p{L}\\p{N} _-]+"), " ").replace(Regex("\\s+"), " ").trim().take(60).ifEmpty { "informe" } + ".$extension"
+    /**
+     * A file name from a title: letters, digits and spaces, at most 60 characters. Accents written as separate marks
+     * ("O" + "́", as some PDF file names are) are joined to their letter first, or "RETENCIÓN" would become "RETENCIO N".
+     */
+    fun fileName(title: String, extension: String) = java.text.Normalizer.normalize(title, java.text.Normalizer.Form.NFC)
+        .replace(Regex("[^\\p{L}\\p{M}\\p{N} _-]+"), " ").replace(Regex("\\s+"), " ").trim().take(60).ifEmpty { "informe" } + ".$extension"
 }

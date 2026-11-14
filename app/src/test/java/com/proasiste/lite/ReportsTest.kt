@@ -106,6 +106,8 @@ class ReportsTest {
     @Test fun fileNamesAreSafe() {
         assertEquals("Qué exige la ley penal en blanco.pdf", Export.fileName("¿Qué exige la ley penal en blanco?", "pdf"))
         assertEquals("informe.md", Export.fileName("???", "md"))
+        // An accent stored as a separate mark stays on its letter.
+        assertEquals("STC 2301-12 RETENCIÓN.doclang", Export.fileName("STC 2301-12 RETENCIÓN", "doclang"))
     }
 
     @Test fun schemaEightUpgrades() {

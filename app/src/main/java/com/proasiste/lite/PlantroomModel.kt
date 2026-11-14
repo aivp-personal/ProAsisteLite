@@ -41,6 +41,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     private val tags=com.proasiste.lite.tags.Tags(store)
     // Declared before init: refresh() runs during construction and reads them.
     private val reports=com.proasiste.lite.reports.Reports(store)
+    private val actionsStore=com.proasiste.lite.actions.Actions(store)
     private var openReportId:Long?=null
     private val deepSeek=com.proasiste.lite.runtime.DeepSeekFacts()
     private val worker=engine.worker
@@ -215,6 +216,56 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         }
     }
 
+    // ---- Actions on files ----
+    private fun refreshActions(){state=state.copy(actions=actionsStore.all().map{UiAction(it.key,it.name,it.instructions,it.skillId,it.local)})}
+    /** A DocLang run waiting for its folder: the action and the files. */
+    private var pendingDocLang:Pair<String,List<String>>?=null
+    /** The indexed PDFs an action runs on: all of the project's, or those carrying [tag]. */
+    private fun actionTargets(tag:String?):List<String>{
+        val withTag=tag?.let{t->state.tagsBySource.filterValues{t in it}.keys}
+        return store.sources(state.buildingId).filter{it.type=="pdf"&&it.indexed&&(withTag==null||it.id in withTag)}.map{it.id}
+    }
+    /**
+     * Starts an action in the background on the project's indexed PDFs or a tag's. DocLang asks for a folder first; AI
+     * actions need the project's OpenRouter model and the key, and never run in an incognito project.
+     */
+    fun runAction(key:String,tag:String?){
+        val action=actionsStore.all().firstOrNull{it.key==key}?:return
+        val targets=actionTargets(tag)
+        if(targets.isEmpty()){state=state.copy(error=tr("No indexed PDFs here yet.","Aún no hay PDF indexados aquí."));return}
+        val scope=tag?.let{"#$it"}?:state.buildingId
+        if(action.local){pendingDocLang="${action.key}|$scope" to targets;state=state.copy(pickActionFolder=true);return}
+        val project=state.projects.firstOrNull{it.id==state.buildingId}?:return
+        val problem=when{
+            project.incognito->tr("Actions that use AI are off in incognito projects. Nothing left this phone.","Las acciones con IA están desactivadas en proyectos incógnito. Nada salió de este teléfono.")
+            project.answerModel.isEmpty()->tr("Choose an OpenRouter model for this project first, in settings under Who writes answers. Actions use that model.","Primero elige un modelo de OpenRouter para este proyecto, en ajustes, en Quién escribe las respuestas. Las acciones usan ese modelo.")
+            !state.jevKeySaved->tr("Save your OpenRouter key in settings first.","Primero guarda tu clave de OpenRouter en ajustes.")
+            else->null
+        }
+        if(problem!=null){state=state.copy(error=problem);return}
+        startRun(action,scope,targets,CloudAnswerer.displayName(project.answerModel,catalogModels),"")
+    }
+    private fun startRun(action:com.proasiste.lite.actions.Action,scope:String,targets:List<String>,model:String,folder:String){
+        val building=state.buildingId
+        viewModelScope.launch{
+            try{withContext(worker){actionsStore.start(building,action,scope,targets,model,folder)}}catch(e:Exception){state=state.copy(error=e.message?.take(200));return@launch}
+            IndexService.start(appContext,building)
+            refreshReports()
+            state=state.copy(status=tr("${action.name} on ${targets.size} files · runs in the background; the result grows in Reports","${action.name} en ${targets.size} archivos · se ejecuta en segundo plano; el resultado crece en Informes"))
+        }
+    }
+    /** The folder picked for a DocLang run: kept writable, then the run starts. */
+    fun docLangFolder(tree:Uri?){
+        state=state.copy(pickActionFolder=false)
+        val (spec,targets)=pendingDocLang?:return;pendingDocLang=null
+        if(tree==null)return
+        try{appContext.contentResolver.takePersistableUriPermission(tree,android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)}catch(_:Exception){}
+        val action=actionsStore.all().firstOrNull{it.key==spec.substringBefore('|')}?:return
+        startRun(action,spec.substringAfter('|'),targets,"",tree.toString())
+    }
+    fun saveSkill(name:String,instructions:String){viewModelScope.launch{try{withContext(worker){actionsStore.saveSkill(name,instructions)}}catch(e:Exception){state=state.copy(error=e.message?.take(200))};refreshActions()}}
+    fun deleteSkill(id:Long){viewModelScope.launch{withContext(worker){actionsStore.deleteSkill(id)};refreshActions()}}
+
     // ---- Graph types ----
     /** Changes the project's graph schema and saves it; facts already in the graph stay until the graph is built again. */
     private fun editSchema(change:(com.proasiste.lite.graph.GraphSchema)->com.proasiste.lite.graph.GraphSchema){
@@ -366,7 +417,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
             graphSchema=store.graphSchema(state.buildingId),
             tagRules=tags.rules(state.buildingId).map{UiTagRule(it.id,it.kind,it.pattern,it.tag)},aiTags=tags.definitions(state.buildingId).map{UiTagDef(it.name,it.description)},
             availableAssetIds=sources.map{it.asset}.distinct().sorted(),items=filterItems(candidates,state.buildingId,state.filters))
-        refreshReports()
+        refreshReports();refreshActions()
     }
     /** What the Library says under a file: why it isn't indexed, or which of its pages couldn't be read. */
     private fun libraryNote(s:Source)=when{

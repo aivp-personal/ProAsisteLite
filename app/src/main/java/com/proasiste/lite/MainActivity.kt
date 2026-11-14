@@ -51,6 +51,8 @@ class MainActivity:ComponentActivity(){
     private val filesPicker=registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()){if(it.isNotEmpty())model.importFiles(it)}
     private val folderPicker=registerForActivityResult(ActivityResultContracts.OpenDocumentTree()){it?.let(model::importFolder)}
     // "Save as" for exports: the user picks the folder (or Drive); the app writes the file there.
+    // The folder a Convert to DocLang run writes into.
+    private val actionFolderPicker=registerForActivityResult(ActivityResultContracts.OpenDocumentTree()){model.docLangFolder(it)}
     private val exportPickers=listOf("text/markdown","application/pdf","text/csv","application/json","application/octet-stream").associateWith{mime->registerForActivityResult(ActivityResultContracts.CreateDocument(mime)){model.exportTo(it)}}
     // The progress notification needs this on Android 13+. Declining it doesn't stop the import; the notification just isn't shown.
     private val notifications=registerForActivityResult(ActivityResultContracts.RequestPermission()){folderPicker.launch(null)}
@@ -78,7 +80,7 @@ class MainActivity:ComponentActivity(){
                 onSchemaMode=model::setSchemaMode,onAddNodeType=model::addNodeType,onRemoveNodeType=model::removeNodeType,
                 onAddLinkType=model::addLinkType,onRemoveLinkType=model::removeLinkType,onLegalPreset=model::useLegalPreset,
                 onSaveAnswer=model::saveAnswer,onOpenReport=model::openReport,onCloseReport=model::closeReport,onSaveReport=model::saveReport,onDeleteReport=model::deleteReport,
-                onNewNote=model::newNote,onDecide=model::decide,onExportReport=model::exportReport,onExportDecisions=model::exportDecisions,onExportFacts=model::exportFacts,onExportDocLang=model::exportDocLang,
+                onNewNote=model::newNote,onDecide=model::decide,onExportReport=model::exportReport,onExportDecisions=model::exportDecisions,onExportFacts=model::exportFacts,onExportDocLang=model::exportDocLang,onRunAction=model::runAction,onSaveSkill=model::saveSkill,onDeleteSkill=model::deleteSkill,
                 
                 onConfirmShare={text->model.dismissShare();startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,text),tr("Share answer", "Compartir respuesta")))},onQuery=model::setQuery,onSearch=model::search,
                 onImportModel={modelPicker.launch(arrayOf("*/*"))},onImportCorpus={packPicker.launch(arrayOf("application/zip","application/octet-stream"))},
@@ -98,6 +100,7 @@ class MainActivity:ComponentActivity(){
                 AlertDialog(onDismissRequest={photoChoices=false},title={Text(tr("Search with a photo", "Buscar con una foto"))},text={Text(tr("Find visually related evidence in the selected project.", "Encuentra evidencia visualmente similar en el proyecto seleccionado."))},confirmButton={TextButton(onClick={photoChoices=false;photoPicker.launch(arrayOf("image/*"))}){Text(tr("Choose photo", "Elegir foto"))}},dismissButton={TextButton(onClick={photoChoices=false;takePhoto()}){Text(tr("Use camera", "Usar cámara"))}})
             }
             LaunchedEffect(document?.id){model.documentOpen(document)}
+            LaunchedEffect(model.state.pickActionFolder){if(model.state.pickActionFolder)actionFolderPicker.launch(null)}
             LaunchedEffect(model.state.export){model.state.export?.let{e->exportPickers[e.mime]?.launch(e.name)?:model.exportTo(null)}}
             document?.let{item->PdfViewer(item,model.state.pageReview,onReview={page->model.reviewPage(item.id,page)},onReviewPending={page->model.reviewPending(item.id,page)}){document=null}}
             originalPhoto?.let{item->PhotoViewer(item){originalPhoto=null}}

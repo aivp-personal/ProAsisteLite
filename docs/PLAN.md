@@ -11,7 +11,7 @@ ProAsisteLocal (`com.plantroom.pocket`) loads every chunk to search, which break
 | 2 | Choosing the model for answers | **Done** (2026-11-13) |
 | 3 | Sorting and tagging | **Done** (2026-11-13) |
 | 4 | DocLang reader, then graph tables the user guides | **Done** (2026-11-14) |
-| 5 | Skills and actions on files, saved reports and decisions | In progress: reports, decisions, export and DocLang files done |
+| 5 | Skills and actions on files, saved reports and decisions | **Done** (2026-11-14) |
 
 ## 1. Getting thousands of files in — done
 
@@ -153,5 +153,17 @@ where the user picks through Android's save dialog; nothing is sent. Checked on 
 and as a PDF that reads back correctly; STC 1810-10's DocLang file from the phone matches to_doclang.py exactly (same
 blocks, page breaks and words). Not yet: Word output, reports in search, decisions on a page, filtering by decision.
 
-Next, part 2: actions on files (summarise, extract a table, classify, find dates and parties, Convert to DocLang for a
-whole project or tag) run in the background, with results saved as reports, and the user's own actions saved as skills.
+**Done (2026-11-14), part 2: actions on files.** Add evidence → Actions on files runs an action on a project's indexed
+PDFs or a tag's, in the background service after importing, indexing and AI tagging, with progress, Pause and resume
+(schema 10: `skills`, `action_runs`, `action_queue`). Built in: Resumen, Tablas, Clasificar, Fechas y partes, each
+answering in the document's language with pages cited; and Convertir a DocLang, which writes a .doclang file per PDF into
+a folder the user picks, on the phone and free. Skills are the user's own actions (a name and instructions), kept for
+every project. AI actions send each PDF's DocLang text (page-marked, up to 60,000 characters, with a note where it was
+cut) and the instructions to the project's OpenRouter model; they never run in an incognito project and stop at once on a
+refused key or an empty account. Each run's results go into one report that grows as files finish, a section per file
+with the file among its sources. Checked on the Fold: Clasificar on #tributario (3 files) wrote a correct three-section
+report with pages; Convertir a DocLang wrote three files whose content matches to_doclang.py (STC 2865-15: same
+headings, lists, pictures, paragraphs and page breaks, 99.9% of words). Accented file names are kept whole.
+
+Not yet: Word output; reports in search; decisions on a page; actions on a single chosen file; AI actions with Gemini
+Nano (Android may block it in the background).

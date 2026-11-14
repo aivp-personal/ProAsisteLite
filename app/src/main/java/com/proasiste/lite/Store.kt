@@ -194,7 +194,7 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
     /** Remove a project's sources, their search index, graph and the app's private copies of their files. Returns the source count. */
     fun deleteProject(project:String):Int{
         val doomed=sources(project)
-        writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("graph_schemas","building=?",arrayOf(project));delete("decisions","building=?",arrayOf(project));delete("reports","building=?",arrayOf(project));delete("tag_rules","building=?",arrayOf(project));delete("tags","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
+        writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("graph_schemas","building=?",arrayOf(project));delete("decisions","building=?",arrayOf(project));delete("reports","building=?",arrayOf(project));delete("action_runs","building=?",arrayOf(project));delete("tag_rules","building=?",arrayOf(project));delete("tags","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
         indexChanged()
         doomed.forEach{deleteCopy(it.path)}
         return doomed.size
@@ -329,6 +329,15 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
                 "CREATE INDEX reports_building ON reports(building,updated)",
                 "CREATE TABLE decisions(id INTEGER PRIMARY KEY,building TEXT NOT NULL,target TEXT NOT NULL,target_id TEXT NOT NULL,value TEXT NOT NULL,note TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL)",
                 "CREATE INDEX decisions_target ON decisions(building,target,target_id)",
+            ),
+            // 10: actions on files. Skills are the user's own actions, for every project. A run applies one action to a
+            // project or tag; its files wait in a queue the background service works through, and each result is added
+            // to the run's report. [folder] is where a DocLang run writes its files.
+            listOf(
+                "CREATE TABLE skills(id INTEGER PRIMARY KEY,name TEXT NOT NULL,instructions TEXT NOT NULL,created INTEGER NOT NULL)",
+                "CREATE TABLE action_runs(id INTEGER PRIMARY KEY,building TEXT NOT NULL,action TEXT NOT NULL,title TEXT NOT NULL,instructions TEXT NOT NULL DEFAULT '',report_id INTEGER NOT NULL,folder TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL)",
+                "CREATE TABLE action_queue(id INTEGER PRIMARY KEY,run_id INTEGER NOT NULL REFERENCES action_runs(id) ON DELETE CASCADE,source TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,status TEXT NOT NULL DEFAULT 'pendiente',note TEXT NOT NULL DEFAULT '')",
+                "CREATE INDEX action_queue_status ON action_queue(status,run_id)",
             ),
         )
         private val SOURCE_COLUMNS=arrayOf("id","path","type","building","asset","date","title","synthetic","indexed","error","pages","no_text_pages")

@@ -119,6 +119,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         var tagsSheet by remember { mutableStateOf(false) }
         var graphTypes by remember { mutableStateOf(false) }
         var reportsSheet by remember { mutableStateOf(false) }
+        var actionsSheet by remember { mutableStateOf(false) }
         var deleteSource by remember { mutableStateOf<UiItem?>(null) }
         var library by rememberSaveable { mutableStateOf(false) }
         val listState = rememberLazyListState()
@@ -411,6 +412,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         if (tagsSheet) TagsSheet(state, actions, onClose = { tagsSheet = false })
         if (graphTypes) GraphTypesSheet(state, actions, onClose = { graphTypes = false })
         if (reportsSheet) ReportsSheet(state, actions, onClose = { reportsSheet = false })
+        if (actionsSheet) ActionsSheet(state, actions, onClose = { actionsSheet = false })
         state.openReport?.let { r -> ReportScreen(r, state, actions, onOpenSource = actions.onOpenSource) }
 
         if (buildings) ModalBottomSheet(onDismissRequest = { buildings = false }, containerColor = Steel) {
@@ -501,6 +503,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
             ActionRow(tr("Import a folder", "Importar una carpeta"), tr("Every PDF, photo and recording in it and its subfolders, imported and indexed in the background", "Todos los PDF, fotos y grabaciones de la carpeta y sus subcarpetas, importados e indexados en segundo plano"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportFolder() }
             ActionRow(if (state.recording) tr("Stop & save recording", "Detener y guardar grabación") else tr("Record a voice note", "Grabar una nota de voz"), tr("Capture an observation during your visit", "Registra una observación durante tu visita"), "audio", enabled = !state.busy) { capture = false; navigate(true); actions.onRecordAudio() }
             ActionRow(tr("Build graph with DeepSeek", "Construir el grafo con DeepSeek"), tr("Sends this project's PDF text to OpenRouter and DeepSeek with your saved key. Never for incognito projects.", "Envía el texto de los PDF de este proyecto a OpenRouter y DeepSeek con tu clave guardada. Nunca en proyectos incógnito."), "library", enabled = !locked && state.jevKeySaved) { capture = false; navigate(true); actions.onBuildGraph() }
+            ActionRow(tr("Actions on files", "Acciones sobre archivos"), tr("Summarise, extract tables, classify, find dates and parties, your own skills, or convert to DocLang, on a whole project or a tag", "Resumir, extraer tablas, clasificar, buscar fechas y partes, tus habilidades, o convertir a DocLang, sobre todo el proyecto o una etiqueta"), "library", enabled = !locked) { capture = false; actionsSheet = true }
             ActionRow(tr("Graph types", "Tipos del grafo"), if (state.graphSchema.custom) tr("My types: ${state.graphSchema.nodes.size} types, ${state.graphSchema.links.size} links", "Mis tipos: ${state.graphSchema.nodes.size} tipos, ${state.graphSchema.links.size} vínculos")
                 else tr("Automatic: legal types for Chilean rulings, free-form for other files", "Automático: tipos legales para fallos chilenos, libres para otros archivos"), "settings", enabled = !locked) { capture = false; graphTypes = true }
             ActionRow(tr("Import a graph file", "Importar un archivo de grafo"), tr("Facts about a file already in this project", "Datos sobre un archivo que ya está en este proyecto"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportGraph() }

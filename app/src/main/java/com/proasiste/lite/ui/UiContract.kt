@@ -58,6 +58,9 @@ data class UiDecision(val value: String, val note: String, val created: Long)
 data class UiReport(val id: Long, val title: String, val question: String, val body: String, val model: String, val cited: List<UiItem>,
                     val created: Long, val updated: Long, val decision: UiDecision? = null, val history: List<UiDecision> = emptyList())
 
+/** An action on files: built in, or a skill the user wrote ([skillId] > 0). [local] needs no model (DocLang). */
+data class UiAction(val key: String, val name: String, val instructions: String, val skillId: Long = 0, val local: Boolean = false)
+
 /** A file the user is about to save: the app asks where, then writes it. */
 data class UiExport(val name: String, val mime: String)
 
@@ -208,6 +211,10 @@ data class UiState(
     val fileDecisions: Map<String, UiDecision> = emptyMap(),
     /** A file waiting for the user to choose where to save it. */
     val export: UiExport? = null,
+    /** Built-in actions, then the user's skills. */
+    val actions: List<UiAction> = emptyList(),
+    /** A DocLang run is waiting for the user to pick the folder it writes into. */
+    val pickActionFolder: Boolean = false,
 )
 
 data class UiActions(
@@ -273,6 +280,11 @@ data class UiActions(
     val onExportFacts: (String) -> Unit = {},
     /** Saves one PDF (by source id) as a DocLang file. */
     val onExportDocLang: (String) -> Unit = {},
+    /** Runs an action (key) on the project's indexed PDFs, or on those with a tag (null for all). */
+    val onRunAction: (String, String?) -> Unit = { _, _ -> },
+    /** Saves a skill (name, instructions). */
+    val onSaveSkill: (String, String) -> Unit = { _, _ -> },
+    val onDeleteSkill: (Long) -> Unit = {},
     val onQuery: (String) -> Unit = {},
     val onSearch: () -> Unit = {},
     val onImportModel: () -> Unit = {},

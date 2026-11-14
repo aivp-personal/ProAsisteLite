@@ -62,6 +62,19 @@ class Engine private constructor(context:Context){
         }
     }
 
+    /**
+     * A PDF's pages as text for AI: the DocLang blocks without running headers and footers, in reading order, or the old
+     * page reader when the DocLang reader finds little text. Empty for photos and recordings.
+     */
+    fun pagesForAi(s:Source):List<com.proasiste.lite.runtime.DeepSeekFacts.PageText>{
+        if(s.type!="pdf")return emptyList()
+        return PDDocument.load(File(s.path)).use{pdf->
+            val d=runCatching{com.proasiste.lite.runtime.DocLang.read(pdf)}.getOrNull()?.takeIf{com.proasiste.lite.runtime.DocPages.usable(it)}
+            d?.let{com.proasiste.lite.runtime.DocPages.pages(it)}
+                ?:(1..pdf.numberOfPages).map{p->val read=PdfText.page(pdf,p);com.proasiste.lite.runtime.DeepSeekFacts.PageText(p,(listOf(read.prose)+read.tables.flatten()).joinToString("\n").trim())}
+        }
+    }
+
     /** The text of a PDF's first pages, up to [maxChars], for AI tagging. Empty for photos and recordings. */
     fun firstPages(s:Source,maxChars:Int=com.proasiste.lite.runtime.CloudTagger.MAX_CHARS):String{
         if(s.type!="pdf")return ""
