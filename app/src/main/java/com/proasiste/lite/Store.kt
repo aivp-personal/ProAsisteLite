@@ -115,6 +115,13 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
     /** How many of [building]'s PDFs are scans waiting for OCR, and how many indexed ones have some pages without text. */
     fun scanCounts(building:String):Pair<Int,Int> =readableDatabase.rawQuery("SELECT SUM(pages>0 AND no_text_pages=pages),SUM(indexed=1 AND no_text_pages>0) FROM sources WHERE building=?",arrayOf(building)).use{it.moveToFirst();it.getInt(0) to it.getInt(1)}
 
+    /** The project's graph schema; automatic when none was saved. */
+    fun graphSchema(building:String):com.proasiste.lite.graph.GraphSchema=
+        readableDatabase.rawQuery("SELECT json FROM graph_schemas WHERE building=?",arrayOf(building)).use{if(it.moveToFirst())com.proasiste.lite.graph.GraphSchema.fromJson(it.getString(0)) else com.proasiste.lite.graph.GraphSchema()}
+    fun saveGraphSchema(building:String,schema:com.proasiste.lite.graph.GraphSchema){
+        writableDatabase.insertWithOnConflict("graph_schemas",null,ContentValues().apply{put("building",building);put("json",schema.toJson())},SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
     /** Saves a source's chunks and marks it indexed. For PDFs, [pages] and [noTextPages] record how much of it had text. */
     fun saveChunks(source:Source,chunks:List<VectorChunk>,pages:Int=0,noTextPages:Int=0){
         require(chunks.isNotEmpty()){ tr("No searchable content found", "No se encontró contenido para buscar") }
@@ -187,7 +194,7 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
     /** Remove a project's sources, their search index, graph and the app's private copies of their files. Returns the source count. */
     fun deleteProject(project:String):Int{
         val doomed=sources(project)
-        writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("tag_rules","building=?",arrayOf(project));delete("tags","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
+        writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("graph_schemas","building=?",arrayOf(project));delete("tag_rules","building=?",arrayOf(project));delete("tags","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
         indexChanged()
         doomed.forEach{deleteCopy(it.path)}
         return doomed.size
@@ -310,6 +317,10 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
             listOf(
                 "ALTER TABLE graph_edges ADD COLUMN place TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE graph_review ADD COLUMN place TEXT NOT NULL DEFAULT ''",
+            ),
+            // 8: each project's graph schema (its node and link types), as JSON; a project without a row is automatic.
+            listOf(
+                "CREATE TABLE graph_schemas(building TEXT PRIMARY KEY,json TEXT NOT NULL)",
             ),
         )
         private val SOURCE_COLUMNS=arrayOf("id","path","type","building","asset","date","title","synthetic","indexed","error","pages","no_text_pages")

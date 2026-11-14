@@ -188,6 +188,8 @@ data class UiState(
     val tagRules: List<UiTagRule> = emptyList(),
     /** Tags AI may choose in this project. */
     val aiTags: List<UiTagDef> = emptyList(),
+    /** What this project's graph extracts: automatic, or its own node and link types. */
+    val graphSchema: com.proasiste.lite.graph.GraphSchema = com.proasiste.lite.graph.GraphSchema(),
 )
 
 data class UiActions(
@@ -226,6 +228,15 @@ data class UiActions(
     val onDefineTag: (String, String) -> Unit = { _, _ -> },
     /** Queues the project's indexed PDFs for AI tagging in the background. */
     val onTagWithAi: () -> Unit = {},
+    /** Graph types: "auto" or "custom". */
+    val onSchemaMode: (String) -> Unit = {},
+    val onAddNodeType: (String, String) -> Unit = { _, _ -> },
+    val onRemoveNodeType: (String) -> Unit = {},
+    /** Adds a link type (name, description, from types, to types). */
+    val onAddLinkType: (String, String, Set<String>, Set<String>) -> Unit = { _, _, _, _ -> },
+    val onRemoveLinkType: (String) -> Unit = {},
+    /** Replaces the custom types with a copy of the Chilean rulings types. */
+    val onLegalPreset: () -> Unit = {},
     val onQuery: (String) -> Unit = {},
     val onSearch: () -> Unit = {},
     val onImportModel: () -> Unit = {},

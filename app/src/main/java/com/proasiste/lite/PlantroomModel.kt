@@ -122,6 +122,31 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     }
     private fun CloudAnswerer.Model.ui()=UiModel(id,name,inputPerMillion,outputPerMillion,context)
 
+    // ---- Graph types ----
+    /** Changes the project's graph schema and saves it; facts already in the graph stay until the graph is built again. */
+    private fun editSchema(change:(com.proasiste.lite.graph.GraphSchema)->com.proasiste.lite.graph.GraphSchema){
+        val building=state.buildingId
+        viewModelScope.launch{
+            try{withContext(worker){store.saveGraphSchema(building,change(store.graphSchema(building)))}}catch(e:Exception){state=state.copy(error=e.message?.take(200))}
+            refresh()
+        }
+    }
+    fun setSchemaMode(mode:String)=editSchema{it.copy(mode=mode)}
+    fun addNodeType(name:String,description:String){
+        val n=com.proasiste.lite.graph.GraphSchema.cleanType(name);if(n.isEmpty())return
+        editSchema{s->s.copy(nodes=s.nodes.filter{it.name!=n}+com.proasiste.lite.graph.NodeType(n,description.trim().take(200)))}
+    }
+    /** Removes a type and its place in every link; a link left with no type on one side is removed too. */
+    fun removeNodeType(name:String)=editSchema{s->s.copy(nodes=s.nodes.filter{it.name!=name},
+        links=s.links.map{it.copy(from=it.from-name,to=it.to-name)}.filter{it.from.isNotEmpty()&&it.to.isNotEmpty()})}
+    fun addLinkType(name:String,description:String,from:Set<String>,to:Set<String>){
+        val n=com.proasiste.lite.graph.GraphSchema.cleanLink(name);if(n.isEmpty()||from.isEmpty()||to.isEmpty())return
+        editSchema{s->s.copy(links=s.links.filter{it.name!=n}+com.proasiste.lite.graph.LinkType(n,description.trim().take(300),from,to))}
+    }
+    fun removeLinkType(name:String)=editSchema{s->s.copy(links=s.links.filter{it.name!=name})}
+    /** Replaces the custom types with a copy of the legal mode's, to edit. */
+    fun useLegalPreset()=editSchema{com.proasiste.lite.graph.GraphSchema.legalPreset()}
+
     // ---- Tags ----
     private fun tagWork(block:()->Unit){viewModelScope.launch{try{withContext(worker){block()}}catch(e:Exception){state=state.copy(error=e.message?.take(200))};refresh()}}
     fun addTag(sourceId:String,name:String)=tagWork{tags.add(sourceId,state.buildingId,name)}
@@ -245,6 +270,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         state=state.copy(reviewCount=graph.reviewCount(state.buildingId),docReview=docReview,pageReview=pageReview,totalCount=sources.size,indexedCount=sources.count{it.indexed},photoCount=sources.count{it.type=="image"},audioCount=sources.count{it.type=="audio"},reportCount=sources.count{it.type=="pdf"},
             remainingCount=sources.count{!it.indexed&&!it.needsOcr},scanCount=sources.count{it.needsOcr},queuedCount=store.importCounts(state.buildingId).pending,
             tagsBySource=bySource,tagCounts=tags.counts(state.buildingId).map{(n,c)->UiTagCount(n,c)},
+            graphSchema=store.graphSchema(state.buildingId),
             tagRules=tags.rules(state.buildingId).map{UiTagRule(it.id,it.kind,it.pattern,it.tag)},aiTags=tags.definitions(state.buildingId).map{UiTagDef(it.name,it.description)},
             availableAssetIds=sources.map{it.asset}.distinct().sorted(),items=filterItems(candidates,state.buildingId,state.filters))
     }
@@ -361,12 +387,14 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         val key=cloudKey()?:error(if(state.projects.firstOrNull{it.id==state.buildingId}?.incognito==true)tr("Graph building is off in incognito projects. Nothing left this phone.", "La construcción del grafo está desactivada en proyectos incógnito. Nada salió de este teléfono.") else tr("Save your OpenRouter key in settings first.", "Primero guarda tu clave de OpenRouter en la configuración."))
         val project=state.buildingId
         val pdfs=withContext(worker){store.sources(project).filter{it.type=="pdf"&&it.indexed}}
+        val schema=withContext(worker){store.graphSchema(project)}
+        check(schema.complete()){tr("Finish the project's graph types first: at least one type and one link, and links that name only listed types.","Primero completa los tipos del grafo del proyecto: al menos un tipo y un vínculo, y vínculos que solo nombren tipos de la lista.")}
         check(pdfs.isNotEmpty()){tr("Index this project's PDFs first.", "Primero indexa los PDF de este proyecto.")}
         var added=0;var dropped=0;var pages=0;var cost=0.0;var review=0;var legal=0;var failed=0;var kept=0
         for((i,s) in pdfs.withIndex()){
             val text=withContext(worker){graphText(s)}
             val alsoKnown=withContext(worker){graph.nodeNames(project,"Fallo")+graph.nodeNames(project,"Ministro")}
-            val result=deepSeek.extract(key,s.title,text.pages,alsoKnown,{done,total->state=state.copy(status=tr("DeepSeek · ${s.title} · $done of $total parts done", "DeepSeek · ${s.title} · $done de $total partes listas"),progress=(i+done.toFloat()/total.coerceAtLeast(1))/pdfs.size)},text.checkPages)
+            val result=deepSeek.extract(key,s.title,text.pages,alsoKnown,{done,total->state=state.copy(status=tr("DeepSeek · ${s.title} · $done of $total parts done", "DeepSeek · ${s.title} · $done de $total partes listas"),progress=(i+done.toFloat()/total.coerceAtLeast(1))/pdfs.size)},text.checkPages,schema)
             // Each fact keeps the block it was found in, so it opens on its page with that paragraph highlighted.
             fun placed(f:com.proasiste.lite.graph.NewFact)=text.doc?.let{d->f.copy(place=DocPages.locate(d,f))}?:f
             // A partial result never replaces a complete one: if a part failed and the file has facts, they stay.

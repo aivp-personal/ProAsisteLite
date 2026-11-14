@@ -10,7 +10,7 @@ ProAsisteLocal (`com.plantroom.pocket`) loads every chunk to search, which break
 | 1 | Getting thousands of files in | **Done** (`847aa52`, 2026-11-13) |
 | 2 | Choosing the model for answers | **Done** (2026-11-13) |
 | 3 | Sorting and tagging | **Done** (2026-11-13) |
-| 4 | DocLang reader, then graph tables the user guides | In progress: reader, highlighting and graph from blocks done |
+| 4 | DocLang reader, then graph tables the user guides | **Done** (2026-11-14) |
 | 5 | Skills and actions on files, saved reports and decisions | Not started |
 
 ## 1. Getting thousands of files in — done
@@ -114,6 +114,16 @@ The graph is built from those blocks:
 
 Then **graph tables the user guides**: per project, the user defines node types and links; extraction follows that
 definition, and today's legal mode becomes one ready-made definition. The review screen stays as it is.
+
+**Done (2026-11-14), graph types:** Add evidence → Graph types sets each project to **Automatic** (Chilean rulings in
+legal mode with the rule-based skeleton, other files free-form; the default) or **My types**: node types with
+descriptions, and links with descriptions and the types they may run from and to, stored per project (schema 8,
+`graph_schemas`). "Start from Chilean rulings" copies the legal types and links to edit; removing a type removes it from
+every link and drops links left without a side. In My types every PDF is read page by page with the project's names as
+closed lists in the answer format; facts must pass the usual page checks and run between the types their link allows,
+and record the schema version they were built with. Building refuses an incomplete schema. Checked on the Fold: STC
+1810-10 with the legal types minus Concepto gave 49 facts, all within the schema and placed, none using Concepto, for
+$0.0115. In My types, rulings skip the rule-based skeleton, so Automatic stays best for Chilean rulings.
 
 DocLang describes layout, not legal meaning: the skeleton and the model still decide what is a considerando or a
 dissent. Scans still need OCR first.

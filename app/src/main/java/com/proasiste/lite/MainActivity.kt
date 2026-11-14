@@ -73,6 +73,8 @@ class MainActivity:ComponentActivity(){
                 onAddTag=model::addTag,onRemoveTag=model::removeTag,onToggleTagFilter=model::toggleTagFilter,
                 onAddTagRule=model::addTagRule,onDeleteTagRule=model::deleteTagRule,onApplyTagRules=model::applyTagRules,
                 onDefineTag=model::defineTag,onTagWithAi=model::tagWithAi,
+                onSchemaMode=model::setSchemaMode,onAddNodeType=model::addNodeType,onRemoveNodeType=model::removeNodeType,
+                onAddLinkType=model::addLinkType,onRemoveLinkType=model::removeLinkType,onLegalPreset=model::useLegalPreset,
                 
                 onConfirmShare={text->model.dismissShare();startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,text),tr("Share answer", "Compartir respuesta")))},onQuery=model::setQuery,onSearch=model::search,
                 onImportModel={modelPicker.launch(arrayOf("*/*"))},onImportCorpus={packPicker.launch(arrayOf("application/zip","application/octet-stream"))},

@@ -30,10 +30,12 @@ import java.text.Normalizer
 class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) -> JSONObject = ::post) {
     class PageText(val page: Int, val text: String)
     /** [reviewItems] are facts the checks held back, each with its reason; [legal] says which mode ran; [failedParts] replies stayed unreadable after a retry. */
-    class Result(val facts: List<NewFact>, val pagesSent: List<Int>, val dropped: Int, val cost: Double, val reviewItems: List<Pair<NewFact, String>> = emptyList(), val legal: Boolean = false, val failedParts: Int = 0) {
+    class Result(val facts: List<NewFact>, val pagesSent: List<Int>, val dropped: Int, val cost: Double, val reviewItems: List<Pair<NewFact, String>> = emptyList(), val legal: Boolean = false, val failedParts: Int = 0,
+                 /** The custom schema's version when the project's own types were used. */
+                 val schemaVersion: String? = null) {
         val review: Int get() = reviewItems.size
         /** What wrote the AI facts of this result, for provenance. */
-        val extractor: String get() = "$MODEL@" + if (legal) LegalFacts.PROMPT_VERSION else GENERAL_PROMPT_VERSION
+        val extractor: String get() = "$MODEL@" + (schemaVersion ?: if (legal) LegalFacts.PROMPT_VERSION else GENERAL_PROMPT_VERSION)
     }
     private class Reply(val content: String?, val cost: Double)
 
@@ -56,9 +58,11 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
      * back. [checkPages] is the text facts are checked against, by page; by default the text sent. Passing pages where a
      * paragraph split by a page break is also given whole lets a fact whose words straddle the break pass on its page.
      */
-    suspend fun extract(key: String, title: String, pages: List<PageText>, alsoKnown: Set<String> = emptySet(), onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }, checkPages: List<PageText> = pages): Result {
+    suspend fun extract(key: String, title: String, pages: List<PageText>, alsoKnown: Set<String> = emptySet(), onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }, checkPages: List<PageText> = pages,
+                        schema: com.proasiste.lite.graph.GraphSchema = com.proasiste.lite.graph.GraphSchema()): Result {
         val readable = pages.filter { it.text.isNotBlank() }
         val checked = checkPages.associateBy { it.page }
+        if (schema.custom) return custom(key, title, readable, checked, schema, onProgress)
         if (LegalFacts.isRuling(readable) && readable.sumOf { it.text.length } <= LEGAL_MAX_CHARS) return legal(key, title, readable, alsoKnown, onProgress, readable.map { checked[it.page] ?: it })
         val done = AtomicInteger()
         onProgress(0, readable.size)
@@ -78,6 +82,35 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
         }
         return Result(results.flatMap { it.first }, readable.map { it.page }, results.sumOf { it.second }, results.sumOf { it.third.cost },
             failedParts = results.count { it.third.content == null })
+    }
+
+    /**
+     * The project's own types. Each page goes on its own, several side by side; the reply may only use the schema's type
+     * and link names (enforced in the answer format where the provider supports it), and every fact must pass the usual
+     * page checks and run between the types its link allows.
+     */
+    private suspend fun custom(key: String, title: String, readable: List<PageText>, checked: Map<Int, PageText>, schema: com.proasiste.lite.graph.GraphSchema, onProgress: (done: Int, total: Int) -> Unit): Result {
+        val done = AtomicInteger()
+        onProgress(0, readable.size)
+        val slots = Semaphore(PARALLEL)
+        val extractor = "$MODEL@${schema.version}"
+        val instructions = customInstructions(schema); val answer = customSchema(schema)
+        val results = coroutineScope {
+            readable.map { page ->
+                async {
+                    slots.withPermit {
+                        val reply = ask(key, request(instructions, answer, title, listOf(page)))
+                        val (passed, dropped) = reply.content?.let { parse(it, checked[page.page] ?: page) } ?: (emptyList<NewFact>() to 0)
+                        val (fits, breaks) = passed.partition { schema.problem(it) == null }
+                        breaks.forEach { debugLog("dropped (${schema.problem(it)}) p${it.page}: ${it.statement}") }
+                        onProgress(done.incrementAndGet(), readable.size)
+                        Triple(fits.map { it.copy(extractor = extractor) }, dropped + breaks.size, reply)
+                    }
+                }
+            }.awaitAll()
+        }
+        return Result(results.flatMap { it.first }, readable.map { it.page }, results.sumOf { it.second }, results.sumOf { it.third.cost },
+            failedParts = results.count { it.third.content == null }, schemaVersion = schema.version)
     }
 
     /**
@@ -188,6 +221,33 @@ Return JSON only."""
                         .put("statement", JSONObject().put("type", "string"))))))
 
         fun request(title: String, batch: List<PageText>) = request(INSTRUCTIONS, SCHEMA, title, batch)
+
+        /** The general instructions, with the project's types and links in place of free types. */
+        fun customInstructions(schema: com.proasiste.lite.graph.GraphSchema): String = buildString {
+            append(INSTRUCTIONS.replace("Types and relations are short; relations are UPPER_SNAKE_CASE.", "Use only the types and links listed below, with their exact names. Skip what none of them can express."))
+            append("\n\nNode types (from_type and to_type):\n")
+            schema.nodes.forEach { append("- ${it.name}").append(if (it.description.isNotBlank()) ": ${it.description}" else "").append('\n') }
+            append("\nLinks (relation), each from and to the types shown:\n")
+            schema.links.forEach { l ->
+                fun side(s: Set<String>) = if (s.isEmpty()) "any type" else s.sorted().joinToString(" or ")
+                append("- ${l.name} (${side(l.from)} -> ${side(l.to)})").append(if (l.description.isNotBlank()) ": ${l.description}" else "").append('\n')
+            }
+        }
+
+        /** The answer format, with the type and link names as closed lists. */
+        fun customSchema(schema: com.proasiste.lite.graph.GraphSchema): JSONObject {
+            val types = JSONArray(schema.nodes.map { it.name }); val links = JSONArray(schema.links.map { it.name })
+            return JSONObject().put("type", "object").put("additionalProperties", false).put("required", JSONArray().put("facts"))
+                .put("properties", JSONObject().put("facts", JSONObject().put("type", "array").put("items",
+                    JSONObject().put("type", "object").put("additionalProperties", false)
+                        .put("required", JSONArray(listOf("from", "from_type", "page", "relation", "statement", "to", "to_type")))
+                        .put("properties", JSONObject()
+                            .put("page", JSONObject().put("type", "integer"))
+                            .put("from_type", JSONObject().put("type", "string").put("enum", types)).put("from", JSONObject().put("type", "string"))
+                            .put("relation", JSONObject().put("type", "string").put("enum", links))
+                            .put("to_type", JSONObject().put("type", "string").put("enum", types)).put("to", JSONObject().put("type", "string"))
+                            .put("statement", JSONObject().put("type", "string"))))))
+        }
 
         fun request(instructions: String, schema: JSONObject, title: String, batch: List<PageText>): JSONObject {
             val pages = batch.joinToString("\n\n") { "=== PAGE ${it.page} ===\n${it.text.trim()}" }

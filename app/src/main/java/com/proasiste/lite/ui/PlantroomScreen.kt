@@ -117,6 +117,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         var filterSheet by rememberSaveable { mutableStateOf(false) }
         var inspector by remember { mutableStateOf<UiItem?>(null) }
         var tagsSheet by remember { mutableStateOf(false) }
+        var graphTypes by remember { mutableStateOf(false) }
         var deleteSource by remember { mutableStateOf<UiItem?>(null) }
         var library by rememberSaveable { mutableStateOf(false) }
         val listState = rememberLazyListState()
@@ -399,6 +400,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
 
         if (filterSheet) FilterSheet(state, actions, onClose = { filterSheet = false })
         if (tagsSheet) TagsSheet(state, actions, onClose = { tagsSheet = false })
+        if (graphTypes) GraphTypesSheet(state, actions, onClose = { graphTypes = false })
 
         if (buildings) ModalBottomSheet(onDismissRequest = { buildings = false }, containerColor = Steel) {
             SheetHeader(tr("Projects", "Proyectos"), tr("Choose the project you're working in.", "Elige el proyecto en el que trabajas."))
@@ -480,15 +482,20 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         state.review?.let { ReviewScreen(it, actions) }
 
         if (capture) ModalBottomSheet(onDismissRequest = { capture = false }, containerColor = Steel) {
+          // Scrolls: on a short screen the last actions would otherwise sit below the edge, out of reach.
+          Column(Modifier.verticalScroll(rememberScrollState())) {
             SheetHeader(tr("Add evidence", "Agregar evidencia"), tr("Saved to $buildingName on this phone.", "Se guarda en $buildingName en este teléfono."))
             ActionRow(tr("Take a photo", "Tomar una foto"), tr("Save a new observation to this project", "Guarda una nueva observación en este proyecto"), "image", enabled = !locked) { capture = false; navigate(true); actions.onCapturePhoto() }
             ActionRow(tr("Import files", "Importar archivos"), tr("Photos, PDF reports and short recordings", "Fotos, informes PDF y grabaciones cortas"), "plus", enabled = !locked) { capture = false; navigate(true); actions.onImportFiles() }
             ActionRow(tr("Import a folder", "Importar una carpeta"), tr("Every PDF, photo and recording in it and its subfolders, imported and indexed in the background", "Todos los PDF, fotos y grabaciones de la carpeta y sus subcarpetas, importados e indexados en segundo plano"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportFolder() }
             ActionRow(if (state.recording) tr("Stop & save recording", "Detener y guardar grabación") else tr("Record a voice note", "Grabar una nota de voz"), tr("Capture an observation during your visit", "Registra una observación durante tu visita"), "audio", enabled = !state.busy) { capture = false; navigate(true); actions.onRecordAudio() }
             ActionRow(tr("Build graph with DeepSeek", "Construir el grafo con DeepSeek"), tr("Sends this project's PDF text to OpenRouter and DeepSeek with your saved key. Never for incognito projects.", "Envía el texto de los PDF de este proyecto a OpenRouter y DeepSeek con tu clave guardada. Nunca en proyectos incógnito."), "library", enabled = !locked && state.jevKeySaved) { capture = false; navigate(true); actions.onBuildGraph() }
+            ActionRow(tr("Graph types", "Tipos del grafo"), if (state.graphSchema.custom) tr("My types: ${state.graphSchema.nodes.size} types, ${state.graphSchema.links.size} links", "Mis tipos: ${state.graphSchema.nodes.size} tipos, ${state.graphSchema.links.size} vínculos")
+                else tr("Automatic: legal types for Chilean rulings, free-form for other files", "Automático: tipos legales para fallos chilenos, libres para otros archivos"), "settings", enabled = !locked) { capture = false; graphTypes = true }
             ActionRow(tr("Import a graph file", "Importar un archivo de grafo"), tr("Facts about a file already in this project", "Datos sobre un archivo que ya está en este proyecto"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportGraph() }
             ActionRow(tr("Import a project pack", "Importar un paquete de proyecto"), tr("Load a prepared collection from local storage", "Carga una colección preparada desde el almacenamiento local"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportCorpus() }
             Spacer(Modifier.height(26.dp))
+          }
         }
 
         if (setup) ModalBottomSheet(onDismissRequest = { setup = false }, containerColor = Steel,
