@@ -30,14 +30,18 @@ import java.util.concurrent.atomic.AtomicBoolean
 class PlantroomModel(app:Application):AndroidViewModel(app){
     var state by mutableStateOf(UiState());private set
     private val appContext=app.applicationContext
-    val store=Store(app)
-    val embedder=GemmaEmbedder(app)
+    // Shared with the background indexer: one database and one loaded model per process.
+    private val engine=Engine.get(app)
+    val store=engine.store
+    val embedder=engine.embedder
     private val graph=com.proasiste.lite.graph.Graph(store)
     private val deepSeek=com.proasiste.lite.runtime.DeepSeekFacts()
-    private val worker=Executors.newSingleThreadExecutor().asCoroutineDispatcher()
-    private val cancelIndex=AtomicBoolean(false)
-    private val modelFile=File(app.filesDir,"models/${GemmaEmbedder.MODEL_FILENAME}")
+    private val worker=engine.worker
+    private val modelFile=engine.modelFile
     private val prefs=app.getSharedPreferences("plantroom",0)
+    /** When the Library was last reloaded for background progress: at most every few seconds, since imports can run at several files a second. */
+    private var lastProgressRefresh=0L
+    private var lateRefresh:Job?=null
     private var unfilteredSearchItems: List<UiItem> = emptyList()
     private val nano=NanoAnswerer()
     private val pseudonymizer=Pseudonymizer(nano)
@@ -57,11 +61,23 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
                 if(!prefs.getBoolean("sample-v1",false)){
                     if(app.assets.list("")?.contains("sample-pack.zip")==true){app.assets.open("sample-pack.zip").use{store.importPack(it,projectIds(),"P01")};prefs.edit().putBoolean("sample-v1",true).apply()}
                 }
-                if(modelFile.isFile){verifyModel(modelFile);embedder.load(modelFile.path)}
+                engine.ensureModel()
             }
             state=state.copy(modelReady=embedder.isLoaded,status=if(embedder.isLoaded)tr("Model ready · search runs on this phone", "Modelo listo · la búsqueda funciona en este teléfono") else tr("Import the model to enable search", "Importa el modelo para activar la búsqueda"))
             refresh()
+            // A run Android stopped (not one the user paused) picks up where it left off.
+            if(IndexService.state.value==null&&IndexService.requested(appContext).isNotEmpty())IndexService.start(appContext)
         }
+        viewModelScope.launch{IndexService.state.collect{p->
+            state=state.copy(indexing=p?.let{UiIndexing(
+                if(it.pausing)tr("Pausing after this file · ${it.title}","Pausando después de este archivo · ${it.title}")
+                else it.label,it.fraction,it.pausing)})
+            // At most one Library reload every few seconds, but never drop the last one: a skipped update is reloaded late.
+            val now=System.currentTimeMillis()
+            if(p==null||now-lastProgressRefresh>PROGRESS_REFRESH_MS){lastProgressRefresh=now;lateRefresh?.cancel();lateRefresh=null;refresh()}
+            else if(lateRefresh==null)lateRefresh=viewModelScope.launch{kotlinx.coroutines.delay(PROGRESS_REFRESH_MS);lateRefresh=null;lastProgressRefresh=System.currentTimeMillis();refresh()}
+        }}
+        viewModelScope.launch{IndexService.result.collect{r->if(r!=null){state=state.copy(status=r,modelReady=embedder.isLoaded);refresh()}}}
     }
     private fun projectIds()=state.projects.map{it.id}.toSet()
     private fun loadProjects():List<UiProject>{
@@ -145,11 +161,19 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     fun resetFilters() { applyFilters(UiFilters()) }
     fun refresh(){
         val sources=store.sources(state.buildingId)
-        val candidates = if (state.isSearching) unfilteredSearchItems else sources.map{it.ui(excerpt=if(it.error.isNotBlank())tr("Not indexed: ${it.error}", "Sin indexar: ${it.error}") else "")}
+        val candidates = if (state.isSearching) unfilteredSearchItems else sources.map{it.ui(excerpt=libraryNote(it))}
         val docReview=graph.documentStatus(state.buildingId).mapValues{(_,s)->UiPageStatus(s.pending,s.facts,s.unchecked)}
         val pageReview=openDocumentId?.let{id->graph.pageStatus(id).mapValues{(_,s)->UiPageStatus(s.pending,s.facts,s.unchecked)}}?:emptyMap()
         state=state.copy(reviewCount=graph.reviewCount(state.buildingId),docReview=docReview,pageReview=pageReview,totalCount=sources.size,indexedCount=sources.count{it.indexed},photoCount=sources.count{it.type=="image"},audioCount=sources.count{it.type=="audio"},reportCount=sources.count{it.type=="pdf"},
+            remainingCount=sources.count{!it.indexed&&!it.needsOcr},scanCount=sources.count{it.needsOcr},queuedCount=store.importCounts(state.buildingId).pending,
             availableAssetIds=sources.map{it.asset}.distinct().sorted(),items=filterItems(candidates,state.buildingId,state.filters))
+    }
+    /** What the Library says under a file: why it isn't indexed, or which of its pages couldn't be read. */
+    private fun libraryNote(s:Source)=when{
+        s.needsOcr->tr("Scanned PDF · needs OCR before it can be searched","PDF escaneado · necesita OCR antes de poder buscarse")
+        s.error.isNotBlank()->tr("Not indexed: ${s.error}", "Sin indexar: ${s.error}")
+        s.indexed&&s.noTextPages>0->tr("${s.noTextPages} of ${s.pages} pages have no text (scanned?) · those pages aren't searchable","${s.noTextPages} de ${s.pages} páginas no tienen texto (¿escaneadas?) · esas páginas no se pueden buscar")
+        else->""
     }
     private fun task(label:String,block:suspend()->Unit){
         if(state.busy||state.recording)return
@@ -160,21 +184,31 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         }
     }
     fun importModel(uri:Uri)=task(tr("Importing model · this may take a moment", "Importando modelo · puede tardar un momento")){
+        check(IndexService.state.value==null){tr("Pause importing and indexing before replacing the model.","Pausa la importación y la indexación antes de reemplazar el modelo.")}
         withContext(worker){
             modelFile.parentFile!!.mkdirs();val temp=File(modelFile.parentFile,"model.partial")
             try{appContext.contentResolver.openInputStream(uri)!!.use{input->temp.outputStream().use{out->copyBounded(input,out,600_000_000)}};verifyModel(temp);embedder.close();temp.copyTo(modelFile,overwrite=true);embedder.load(modelFile.path)}finally{temp.delete()}
         }
         state=state.copy(modelReady=embedder.isLoaded,status=tr("Model ready · index your collection next", "Modelo listo · ahora indexa tu colección"))
     }
-    private fun verifyModel(file:File){
-        require(file.length()==GemmaEmbedder.MODEL_BYTES){tr("Choose the full EmbeddingGemma 2 CPU/GPU model (485 MB).", "Elige el modelo completo EmbeddingGemma 2 CPU/GPU (485 MB).")}
-        val digest=MessageDigest.getInstance("SHA-256");file.inputStream().use{input->val b=ByteArray(1024*1024);while(true){val n=input.read(b);if(n<0)break;digest.update(b,0,n)}}
-        require(digest.digest().joinToString(""){"%02x".format(it)}==GemmaEmbedder.MODEL_SHA256){tr("Model checksum does not match the supported release.", "La suma de verificación del modelo no coincide con la versión compatible.")}
-    }
+    private fun verifyModel(file:File)=Engine.verifyModel(file)
     fun importPack(uri:Uri)=task(tr("Importing project pack", "Importando paquete de proyecto")){
         val known=projectIds();val current=state.buildingId
         val count=withContext(worker){appContext.contentResolver.openInputStream(uri)!!.use{store.importPack(it,known,current)}}
         state=state.copy(isSearching=false,query="",searchMillis=null,status=tr("$count sources imported · ready to index", "$count fuentes importadas · listas para indexar"))
+    }
+    /**
+     * Queues every supported file in a picked folder and its subfolders, then imports and indexes them in the background.
+     * Read access to the folder is kept, so a long import can stop and resume. Files already queued are not queued again,
+     * and a file already in the project is skipped when its turn comes.
+     */
+    fun importFolder(tree:Uri)=task(tr("Reading folder", "Leyendo carpeta")){
+        val building=state.buildingId
+        appContext.contentResolver.takePersistableUriPermission(tree,android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val (found,added)=withContext(Dispatchers.IO){val files=FolderImport.walk(appContext,tree);files.size to store.enqueue(building,files)}
+        check(found>0){tr("No PDFs, photos or recordings in that folder.","No hay PDF, fotos ni grabaciones en esa carpeta.")}
+        IndexService.start(appContext,building)
+        state=state.copy(query="",isSearching=false,searchMillis=null,status=tr("$found files found, $added new · importing and indexing in the background. You can keep using the app.","$found archivos encontrados, $added nuevos · se importan e indexan en segundo plano. Puedes seguir usando la app."))
     }
     fun importFiles(uris:List<Uri>)=task(tr("Importing files", "Importando archivos")){
         val building=state.buildingId;var count=0;val errors=mutableListOf<String>()
@@ -196,37 +230,17 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         withContext(worker){val id="USER-${UUID.randomUUID()}";val dest=File(store.library,"$id.m4a");file.copyTo(dest);store.add(Source(id,dest.path,"audio",building,"",LocalDate.now().toString(),tr("Voice note · ${LocalDate.now()}", "Nota de voz · ${LocalDate.now()}"),false));file.delete()}
         state=state.copy(recording=false,isSearching=false,query="",searchMillis=null,status=tr("Voice note saved · ready to index", "Nota de voz guardada · lista para indexar"))
     }
-    fun index()=task(tr("Indexing on this phone", "Indexando en este teléfono")){
-        check(embedder.isLoaded){tr("Import the model first", "Primero importa el modelo")};cancelIndex.set(false)
-        val pending=withContext(worker){store.sources(state.buildingId).filter{!it.indexed}}
-        var failed=0;var completed=0
-        for((i,s) in pending.withIndex()){
-            if(cancelIndex.get())break
-            state=state.copy(status=tr("Indexing ${i+1} of ${pending.size} · ${s.title}", "Indexando ${i+1} de ${pending.size} · ${s.title}"),progress=i.toFloat()/pending.size.coerceAtLeast(1))
-            try{withContext(worker){store.saveChunks(s,encodeSource(s))};completed++}catch(e:Exception){failed++;withContext(worker){store.error(s.id,e.message?:tr("Could not process source", "No se pudo procesar la fuente"))}}
-            refresh()
-        }
-        state=state.copy(status=if(cancelIndex.get())tr("Indexing paused · completed files are saved", "Indexación pausada · los archivos terminados quedan guardados") else tr("$completed sources indexed${if(failed>0)" · $failed failed; inspect files and retry" else " · ready to search"}",
-            "$completed fuentes indexadas${if(failed>0)" · $failed fallaron; revisa los archivos y reintenta" else " · listo para buscar"}"),error=if(failed>0)tr("$failed files could not be indexed. Their library entries show the reason.", "$failed archivos no se pudieron indexar. Su entrada en la biblioteca muestra el motivo.") else null)
+    /**
+     * Indexes this project's remaining files in the background service, so the app stays usable and the work goes on
+     * with the screen off. Files that failed before are tried again; scans waiting for OCR are left alone.
+     */
+    fun index(){
+        if(state.busy||state.recording)return
+        if(!embedder.isLoaded){state=state.copy(error=tr("Import the model first", "Primero importa el modelo"));return}
+        val building=state.buildingId
+        viewModelScope.launch{withContext(worker){store.retryFailed(building)};IndexService.start(appContext,building);refresh()}
     }
-    fun cancel(){cancelIndex.set(true);state=state.copy(status=tr("Finishing current file, then pausing", "Terminando el archivo actual y luego pausando"))}
-    private fun encodeSource(s:Source):List<VectorChunk>{
-        val file=File(s.path)
-        return when(s.type){
-            "image"->{val bitmap=MediaInputs.bitmap(file);try{listOf(VectorChunk(s.id,0,0,0,"",embedder.embedImage(bitmap)))}finally{bitmap.recycle()}}
-            "audio"->{val pcm=MediaInputs.audio(file);val size=12*16000;val step=10*16000;val parts=mutableListOf<VectorChunk>();var from=0
-                while(from<pcm.size){val until=minOf(from+size,pcm.size);parts+=VectorChunk(s.id,parts.size,0,from/16,"",embedder.embedAudio(pcm.copyOfRange(from,until).map{it.coerceIn(-1f,1f)}.toFloatArray()));if(until==pcm.size)break;from+=step};parts}
-            else->{val parts=mutableListOf<VectorChunk>();PDDocument.load(file).use{doc->require(doc.numberOfPages<=1000){tr("PDF limit is 1000 pages", "El límite de PDF es de 1000 páginas")}
-                for(page in 1..doc.numberOfPages){val read=PdfText.page(doc,page);val text=read.prose.trim()
-                    if(text.isNotBlank()){val words=text.split(Regex("\\s+"));var offset=0
-                        // ~60-word blocks with 15 words of overlap: small enough that each block is about one idea.
-                        while(offset<words.size){val end=minOf(offset+60,words.size);val chunk=words.subList(offset,end).joinToString(" ");parts+=VectorChunk(s.id,parts.size,page,0,chunk,embedder.embedText(chunk));if(end==words.size)break;offset+=45}
-                    }
-                    // Rebuilt tables keep their line breaks and whole rows: a row cut in half loses its label.
-                    for(rows in read.tables)for(chunk in TableRows.blocks(rows))parts+=VectorChunk(s.id,parts.size,page,0,chunk,embedder.embedText(chunk))
-                }};require(parts.isNotEmpty()){tr("No selectable text in this PDF. Scanned PDFs are not supported yet.", "Este PDF no tiene texto seleccionable. Los PDF escaneados aún no son compatibles.")};parts}
-        }
-    }
+    fun cancel(){IndexService.pause(appContext)}
     fun search() {if(state.query.isBlank()){state=state.copy(isSearching=false);refresh();return};val query=state.query
         task(tr("Searching locally", "Buscando en el teléfono")){
             val start=System.nanoTime()
@@ -505,10 +519,13 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         val end=minOf(best+width,words.size)
         return (if(best>0)"… " else "")+words.subList(best,end).joinToString(" ")+(if(end<words.size)" …" else "")
     }
-    override fun onCleared(){cancelIndex.set(true);answerJob?.cancel();nano.close();worker.executor.execute{embedder.close();store.close()};worker.close();super.onCleared()}
+    // The store, model and worker belong to the process (Engine), and the background indexer may still be using them.
+    override fun onCleared(){answerJob?.cancel();nano.close();super.onCleared()}
     companion object {
         /** At most this many graph facts join the passages for one answer. */
         const val GRAPH_FACTS=3
+        /** Background progress reloads the Library at most this often. */
+        const val PROGRESS_REFRESH_MS=3000L
         /** How many kept AI facts a spot check draws. */
         const val REVIEW_SAMPLE=10
         /** The most facts a list answer shows. */

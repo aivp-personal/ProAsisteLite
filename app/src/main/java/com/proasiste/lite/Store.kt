@@ -17,9 +17,16 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.ZipInputStream
 
-data class Source(val id:String,val path:String,val type:String,val building:String,val asset:String,val date:String,val title:String,val synthetic:Boolean,val indexed:Boolean=false,val error:String="") {
+/** [pages] and [noTextPages] are set for indexed PDFs: pages with no selectable text were probably scanned and need OCR. */
+data class Source(val id:String,val path:String,val type:String,val building:String,val asset:String,val date:String,val title:String,val synthetic:Boolean,val indexed:Boolean=false,val error:String="",val pages:Int=0,val noTextPages:Int=0) {
+    /** Every page lacks text: the whole file is a scan and can't be searched until it is OCR'd. */
+    val needsOcr:Boolean get()=pages>0&&noTextPages==pages
     fun ui(score:Float?=null, excerpt:String="", location:String="")=UiItem(id,title,when(type){"image"->UiKind.PHOTO;"audio"->UiKind.AUDIO;else->UiKind.REPORT},building,asset,date,path,excerpt,location,synthetic,score)
 }
+/** A file waiting in the import queue: found in a folder the user picked, not yet copied into the library. */
+data class QueuedFile(val id:Long,val uri:String,val building:String,val folder:String,val name:String,val mime:String,val modified:Long)
+/** Import queue totals for a project: [pending] to copy, [imported], [duplicates] skipped, [failed]. */
+data class ImportCounts(val pending:Int=0,val imported:Int=0,val duplicates:Int=0,val failed:Int=0)
 /** A searchable piece of a source. Search results leave [vector] empty: only stored chunks carry one. */
 data class VectorChunk(val sourceId:String,val ordinal:Int,val page:Int,val startMs:Int,val text:String,val vector:FloatArray)
 data class SearchHit(val source:Source,val chunk:VectorChunk,val score:Float)
@@ -52,21 +59,64 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
     }
     fun sources(building:String?=null):List<Source>{
         val list=mutableListOf<Source>()
-        readableDatabase.query("sources",arrayOf("id","path","type","building","asset","date","title","synthetic","indexed","error"),if(building!=null)"building=?" else null,building?.let{arrayOf(it)},null,null,"date DESC,id ASC").use{c->
-            while(c.moveToNext())list+=Source(c.getString(0),c.getString(1),c.getString(2),c.getString(3),c.getString(4)?:"",c.getString(5)?:"",c.getString(6)?:"",c.getInt(7)==1,c.getInt(8)==1,c.getString(9)?:"")
+        readableDatabase.query("sources",SOURCE_COLUMNS,if(building!=null)"building=?" else null,building?.let{arrayOf(it)},null,null,"date DESC,id ASC").use{c->
+            while(c.moveToNext())list+=sourceAt(c)
         };return list
     }
+    private fun sourceAt(c:android.database.Cursor)=Source(c.getString(0),c.getString(1),c.getString(2),c.getString(3),c.getString(4)?:"",c.getString(5)?:"",c.getString(6)?:"",c.getInt(7)==1,c.getInt(8)==1,c.getString(9)?:"",c.getInt(10),c.getInt(11))
     /** The source in [building] whose file has the same contents as [file], if any. */
-    fun duplicateOf(file:File,building:String):Source?{
-        val hash=sha256(file)
-        val id=readableDatabase.rawQuery("SELECT id FROM sources WHERE building=? AND sha256=?",arrayOf(building,hash)).use{if(it.moveToFirst())it.getString(0)else null}?:return null
-        return sources(building).firstOrNull{it.id==id}
-    }
-    fun add(s:Source){
-        val v=ContentValues().apply{put("id",s.id);put("path",s.path);put("type",s.type);put("building",s.building);put("asset",s.asset);put("date",s.date);put("title",s.title);put("synthetic",if(s.synthetic)1 else 0);put("sha256",sha256(File(s.path)))}
+    fun duplicateOf(file:File,building:String):Source?=duplicateOf(sha256(file),building)
+    /** The source in [building] whose file has this SHA-256, if any. */
+    fun duplicateOf(hash:String,building:String):Source?=
+        readableDatabase.query("sources",SOURCE_COLUMNS,"building=? AND sha256=?",arrayOf(building,hash),null,null,null,"1").use{if(it.moveToFirst())sourceAt(it)else null}
+    /** Adds a source. Pass [hash] when it is already known, so a large file isn't read twice. */
+    fun add(s:Source,hash:String?=null){
+        val v=ContentValues().apply{put("id",s.id);put("path",s.path);put("type",s.type);put("building",s.building);put("asset",s.asset);put("date",s.date);put("title",s.title);put("synthetic",if(s.synthetic)1 else 0);put("sha256",hash?:sha256(File(s.path)))}
         writableDatabase.insertWithOnConflict("sources",null,v,SQLiteDatabase.CONFLICT_IGNORE)
     }
-    fun saveChunks(source:Source,chunks:List<VectorChunk>){
+
+    // ---- Import queue: files found in a picked folder, copied in one at a time so a long import can stop and resume ----
+    /** Queues files for [building]; a file already queued for it (same document URI) is not queued again. Returns how many were new. */
+    fun enqueue(building:String,files:List<QueuedFile>):Int=writableDatabase.inTransaction{
+        files.count{f->insertWithOnConflict("import_queue",null,ContentValues().apply{put("uri",f.uri);put("building",building);put("folder",f.folder);put("name",f.name);put("mime",f.mime);put("modified",f.modified)},SQLiteDatabase.CONFLICT_IGNORE)!=-1L}
+    }
+    /** The oldest file still waiting to be copied into one of [buildings], or null. */
+    fun nextImport(buildings:Set<String>):QueuedFile?{
+        if(buildings.isEmpty())return null
+        return readableDatabase.rawQuery("SELECT id,uri,building,folder,name,mime,modified FROM import_queue WHERE status='$QUEUED' AND building IN (${buildings.joinToString(","){"?"}}) ORDER BY id LIMIT 1",buildings.toTypedArray()).use{c->
+            if(c.moveToFirst())QueuedFile(c.getLong(0),c.getString(1),c.getString(2),c.getString(3),c.getString(4),c.getString(5),c.getLong(6)) else null}
+    }
+    /** Records what happened to a queued file: [IMPORTED], [DUPLICATE] or [FAILED] with its reason. */
+    fun finishImport(id:Long,status:String,note:String=""){writableDatabase.update("import_queue",ContentValues().apply{put("status",status);put("note",note.take(250))},"id=?",arrayOf(id.toString()))}
+    fun importCounts(building:String):ImportCounts{
+        val counts=HashMap<String,Int>()
+        readableDatabase.rawQuery("SELECT status,COUNT(*) FROM import_queue WHERE building=? GROUP BY status",arrayOf(building)).use{c->while(c.moveToNext())counts[c.getString(0)]=c.getInt(1)}
+        return ImportCounts(counts[QUEUED]?:0,counts[IMPORTED]?:0,counts[DUPLICATE]?:0,counts[FAILED]?:0)
+    }
+    /** Files waiting to be copied, plus imported files waiting to be indexed, across [buildings]. */
+    fun pendingWork(buildings:Set<String>):Int=pendingParts(buildings).let{it.first+it.second}
+    /** Across [buildings]: files waiting to be copied, and imported files waiting to be indexed. */
+    fun pendingParts(buildings:Set<String>):Pair<Int,Int>{
+        if(buildings.isEmpty())return 0 to 0
+        val args=buildings.toTypedArray();val list=buildings.joinToString(","){"?"}
+        val queued=readableDatabase.rawQuery("SELECT COUNT(*) FROM import_queue WHERE status='$QUEUED' AND building IN ($list)",args).use{it.moveToFirst();it.getInt(0)}
+        val unindexed=readableDatabase.rawQuery("SELECT COUNT(*) FROM sources WHERE indexed=0 AND error='' AND building IN ($list)",args).use{it.moveToFirst();it.getInt(0)}
+        return queued to unindexed
+    }
+    /** The next source to index in [buildings]: not indexed and not failed, in the order it was added. */
+    fun nextToIndex(buildings:Set<String>):Source?{
+        if(buildings.isEmpty())return null
+        return readableDatabase.query("sources",SOURCE_COLUMNS,"indexed=0 AND error='' AND building IN (${buildings.joinToString(","){"?"}})",buildings.toTypedArray(),null,null,"rowid","1").use{if(it.moveToFirst())sourceAt(it)else null}
+    }
+    /** Clears the errors of [building]'s unindexed sources so they are tried again; scans waiting for OCR stay as they are. */
+    fun retryFailed(building:String):Int=writableDatabase.update("sources",ContentValues().apply{put("error","")},"building=? AND indexed=0 AND error!='' AND NOT (pages>0 AND no_text_pages=pages)",arrayOf(building))
+    /** Marks a PDF with no selectable text on any page: it stays unindexed with [message] until it is OCR'd and imported again. */
+    fun markNeedsOcr(id:String,pages:Int,message:String){writableDatabase.update("sources",ContentValues().apply{put("pages",pages);put("no_text_pages",pages);put("error",message.take(250))},"id=?",arrayOf(id))}
+    /** How many of [building]'s PDFs are scans waiting for OCR, and how many indexed ones have some pages without text. */
+    fun scanCounts(building:String):Pair<Int,Int> =readableDatabase.rawQuery("SELECT SUM(pages>0 AND no_text_pages=pages),SUM(indexed=1 AND no_text_pages>0) FROM sources WHERE building=?",arrayOf(building)).use{it.moveToFirst();it.getInt(0) to it.getInt(1)}
+
+    /** Saves a source's chunks and marks it indexed. For PDFs, [pages] and [noTextPages] record how much of it had text. */
+    fun saveChunks(source:Source,chunks:List<VectorChunk>,pages:Int=0,noTextPages:Int=0){
         require(chunks.isNotEmpty()){ tr("No searchable content found", "No se encontró contenido para buscar") }
         writableDatabase.inTransaction{
             delete("chunks","source=?",arrayOf(source.id))
@@ -77,7 +127,7 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
                 val id=insertOrThrow("chunks",null,ContentValues().apply{put("source",source.id);put("ordinal",ch.ordinal);put("page",ch.page);put("start_ms",ch.startMs);put("text",ch.text);put("word_count",words.size);put("vector",bytes.array())})
                 words.groupingBy{it}.eachCount().forEach{(term,count)->insertOrThrow("terms",null,ContentValues().apply{put("term",term);put("chunk_id",id);put("frequency",count)})}
             }
-            update("sources",ContentValues().apply{put("indexed",1);put("error","")},"id=?",arrayOf(source.id))
+            update("sources",ContentValues().apply{put("indexed",1);put("error","");put("pages",pages);put("no_text_pages",noTextPages)},"id=?",arrayOf(source.id))
         }
         indexChanged()
     }
@@ -137,7 +187,7 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
     /** Remove a project's sources, their search index, graph and the app's private copies of their files. Returns the source count. */
     fun deleteProject(project:String):Int{
         val doomed=sources(project)
-        writableDatabase.inTransaction{delete("graph_review","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
+        writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
         indexChanged()
         doomed.forEach{deleteCopy(it.path)}
         return doomed.size
@@ -237,7 +287,18 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
                 "ALTER TABLE graph_review ADD COLUMN original_key TEXT",
                 "CREATE INDEX graph_review_source ON graph_review(source,status)",
             ),
+            // 5: bulk import. Files found in a picked folder wait in a queue and are copied in one at a time, so an import
+            // of thousands can stop and resume. Each PDF records its page count and how many pages had no text (scans).
+            listOf(
+                "CREATE TABLE import_queue(id INTEGER PRIMARY KEY,uri TEXT NOT NULL,building TEXT NOT NULL,folder TEXT NOT NULL,name TEXT NOT NULL,mime TEXT NOT NULL,modified INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'pendiente',note TEXT NOT NULL DEFAULT '',UNIQUE(building,uri))",
+                "CREATE INDEX import_queue_status ON import_queue(status,building)",
+                "ALTER TABLE sources ADD COLUMN pages INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE sources ADD COLUMN no_text_pages INTEGER NOT NULL DEFAULT 0",
+            ),
         )
+        private val SOURCE_COLUMNS=arrayOf("id","path","type","building","asset","date","title","synthetic","indexed","error","pages","no_text_pages")
+        /** Import queue statuses. */
+        const val QUEUED="pendiente"; const val IMPORTED="importado"; const val DUPLICATE="duplicado"; const val FAILED="fallido"
         private val STOP=setOf("the","and","for","are","how","what","when","where","which","who","why","does","do","did","can","you","your","with","this","that","from","into","about","have","has","was","were","will","should","there","they","them","a","an","of","to","in","on","is","it","be","or","as","at","by","if","i","my","me",
             "el","la","los","las","un","una","unos","unas","de","del","que","y","en","por","para","con","como","cual","cuando","donde","es","son","se","su","sus","al","lo","le","les","mi","yo","no","si","o")
         /** Lower-cased, accent-folded words with plural "s" trimmed, minus stop words; shared by queries and chunks. */

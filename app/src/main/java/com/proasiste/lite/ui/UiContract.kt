@@ -101,8 +101,19 @@ data class UiReview(val items: List<UiReviewItem>, val sample: Boolean = false, 
 /** What a document or page holds for review: [pending] held-back facts, [facts] in the graph, [unchecked] nobody stood behind yet. */
 data class UiPageStatus(val pending: Int = 0, val facts: Int = 0, val unchecked: Int = 0)
 
+/** A background import or indexing run: the app stays usable meanwhile. [pausing] once Pause was tapped. */
+data class UiIndexing(val label: String, val progress: Float, val pausing: Boolean = false)
+
 data class UiState(
     val buildingId: String = "P01",
+    /** The background import/indexing run, or null when none is running. */
+    val indexing: UiIndexing? = null,
+    /** Files in this project still to index, not counting scans waiting for OCR. */
+    val remainingCount: Int = 0,
+    /** PDFs in this project with no text on any page: scans waiting for OCR. */
+    val scanCount: Int = 0,
+    /** Files found in picked folders and still waiting to be copied into this project. */
+    val queuedCount: Int = 0,
     /** Held-back graph facts waiting for review in this project. */
     val reviewCount: Int = 0,
     /** The review screen, when open. */
@@ -164,6 +175,8 @@ data class UiActions(
     val onImportModel: () -> Unit = {},
     val onImportCorpus: () -> Unit = {},
     val onImportFiles: () -> Unit = {},
+    /** Picks a folder; every PDF, photo and recording in it and its subfolders is imported and indexed in the background. */
+    val onImportFolder: () -> Unit = {},
     val onImportGraph: () -> Unit = {},
     val onBuildGraph: () -> Unit = {},
     val onOpenReview: () -> Unit = {},

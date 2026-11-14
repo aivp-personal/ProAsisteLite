@@ -251,17 +251,34 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                             TextButton(onClick = { setup = true }, contentPadding = PaddingValues(0.dp)) {
                                 Text(tr("Set up local search", "Configurar búsqueda local"), color = Gold); Spacer(Modifier.width(8.dp)); Glyph("arrow", Gold, Modifier.size(15.dp))
                             }
-                        } else if (state.indexedCount < state.totalCount && !locked && state.indexedCount == 0) {
+                        } else if (state.remainingCount > 0 && state.indexing == null && !locked && state.indexedCount == 0) {
                             TextButton(onClick = { navigate(true) }, contentPadding = PaddingValues(0.dp)) {
                                 Text(tr("Prepare your library for search", "Prepara tu biblioteca para buscar"), color = Gold)
                             }
                         }
                     }
                 }
-                if (library && state.modelReady && state.indexedCount < state.totalCount && !locked) item {
+                if (library && state.modelReady && (state.remainingCount > 0 || state.queuedCount > 0) && state.indexing == null && !locked) item {
                     TextButton(onClick = actions.onIndex, modifier = Modifier.padding(horizontal = 22.dp).testTag("plantroom.index"), contentPadding = PaddingValues(0.dp)) {
-                        Text(tr("Index ${state.totalCount - state.indexedCount} remaining sources", "Indexar ${state.totalCount - state.indexedCount} fuentes pendientes"), color = Gold)
+                        val waiting = state.remainingCount + state.queuedCount
+                        Text(tr("Index $waiting remaining sources", "Indexar $waiting fuentes pendientes"), color = Gold)
                         Spacer(Modifier.width(8.dp)); Glyph("arrow", Gold, Modifier.size(15.dp))
+                    }
+                }
+                if (library && state.scanCount > 0) item {
+                    Text(if (state.scanCount == 1) tr("1 scanned PDF has no text and needs OCR before it can be searched.", "1 PDF escaneado no tiene texto y necesita OCR antes de poder buscarse.")
+                        else tr("${state.scanCount} scanned PDFs have no text and need OCR before they can be searched.", "${state.scanCount} PDF escaneados no tienen texto y necesitan OCR antes de poder buscarse."),
+                        color = Warning, fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.padding(horizontal = 22.dp, vertical = 4.dp).testTag("plantroom.scan-count"))
+                }
+                // A background run doesn't lock the app: its progress and Pause sit here while search and the Library stay usable.
+                state.indexing?.let { run ->
+                    item {
+                        Column(Modifier.padding(horizontal = 22.dp, vertical = 10.dp).testTag("plantroom.background-run")) {
+                            LinearProgressIndicator(progress = { run.progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(3.dp), color = Gold, trackColor = Line)
+                            Spacer(Modifier.height(7.dp))
+                            Text(run.label, color = Muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            if (!run.pausing) TextButton(onClick = actions.onCancelIndex, contentPadding = PaddingValues(0.dp)) { Text(tr("Pause", "Pausar"), color = Gold, fontSize = 12.sp) }
+                        }
                     }
                 }
                 item {
@@ -448,6 +465,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
             SheetHeader(tr("Add evidence", "Agregar evidencia"), tr("Saved to $buildingName on this phone.", "Se guarda en $buildingName en este teléfono."))
             ActionRow(tr("Take a photo", "Tomar una foto"), tr("Save a new observation to this project", "Guarda una nueva observación en este proyecto"), "image", enabled = !locked) { capture = false; navigate(true); actions.onCapturePhoto() }
             ActionRow(tr("Import files", "Importar archivos"), tr("Photos, PDF reports and short recordings", "Fotos, informes PDF y grabaciones cortas"), "plus", enabled = !locked) { capture = false; navigate(true); actions.onImportFiles() }
+            ActionRow(tr("Import a folder", "Importar una carpeta"), tr("Every PDF, photo and recording in it and its subfolders, imported and indexed in the background", "Todos los PDF, fotos y grabaciones de la carpeta y sus subcarpetas, importados e indexados en segundo plano"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportFolder() }
             ActionRow(if (state.recording) tr("Stop & save recording", "Detener y guardar grabación") else tr("Record a voice note", "Grabar una nota de voz"), tr("Capture an observation during your visit", "Registra una observación durante tu visita"), "audio", enabled = !state.busy) { capture = false; navigate(true); actions.onRecordAudio() }
             ActionRow(tr("Build graph with DeepSeek", "Construir el grafo con DeepSeek"), tr("Sends this project's PDF text to OpenRouter and DeepSeek with your saved key. Never for incognito projects.", "Envía el texto de los PDF de este proyecto a OpenRouter y DeepSeek con tu clave guardada. Nunca en proyectos incógnito."), "library", enabled = !locked && state.jevKeySaved) { capture = false; navigate(true); actions.onBuildGraph() }
             ActionRow(tr("Import a graph file", "Importar un archivo de grafo"), tr("Facts about a file already in this project", "Datos sobre un archivo que ya está en este proyecto"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportGraph() }
@@ -473,10 +491,10 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                         Text(if (state.modelReady) tr("Ready on this phone", "Listo en este teléfono") else tr("Import a model to enable search", "Importa un modelo para activar la búsqueda"), color = if (state.modelReady) Gold else Muted, fontSize = 13.sp)
                     }
                     Spacer(Modifier.height(18.dp))
-                    OutlinedButton(onClick = { setup = false; actions.onImportModel() }, enabled = !locked, shape = RoundedCornerShape(12.dp)) {
+                    OutlinedButton(onClick = { setup = false; actions.onImportModel() }, enabled = !locked && state.indexing == null, shape = RoundedCornerShape(12.dp)) {
                         Text(if (state.modelReady) tr("Replace model", "Reemplazar modelo") else tr("Import model file", "Importar archivo del modelo"))
                     }
-                    if (state.modelReady && state.indexedCount < state.totalCount && !locked) {
+                    if (state.modelReady && (state.remainingCount > 0 || state.queuedCount > 0) && state.indexing == null && !locked) {
                         TextButton(onClick = { setup = false; actions.onIndex() }) { Text(tr("Index remaining sources", "Indexar fuentes pendientes")) }
                     }
                 }

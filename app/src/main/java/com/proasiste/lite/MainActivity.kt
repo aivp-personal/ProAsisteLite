@@ -49,6 +49,13 @@ class MainActivity:ComponentActivity(){
     private val graphPicker=registerForActivityResult(ActivityResultContracts.OpenDocument()){it?.let(model::importGraph)}
     private val packPicker=registerForActivityResult(ActivityResultContracts.OpenDocument()){it?.let(model::importPack)}
     private val filesPicker=registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()){if(it.isNotEmpty())model.importFiles(it)}
+    private val folderPicker=registerForActivityResult(ActivityResultContracts.OpenDocumentTree()){it?.let(model::importFolder)}
+    // The progress notification needs this on Android 13+. Declining it doesn't stop the import; the notification just isn't shown.
+    private val notifications=registerForActivityResult(ActivityResultContracts.RequestPermission()){folderPicker.launch(null)}
+    private fun pickFolder(){
+        if(android.os.Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        else folderPicker.launch(null)
+    }
     private val photoPicker=registerForActivityResult(ActivityResultContracts.OpenDocument()){it?.let(model::imageSearch)}
     private val camera=registerForActivityResult(ActivityResultContracts.TakePicture()){ok->if(ok)photoUri?.let{if(photoIsImport)model.importFiles(listOf(it))else model.imageSearch(it)}}
     private val microphone=registerForActivityResult(ActivityResultContracts.RequestPermission()){if(it)startRecording()else model.messageError(tr("Microphone permission is needed to record a note. You can still import recordings.", "Se necesita permiso del micrófono para grabar una nota. Aún puedes importar grabaciones."))}
@@ -65,7 +72,7 @@ class MainActivity:ComponentActivity(){
                 
                 onConfirmShare={text->model.dismissShare();startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,text),tr("Share answer", "Compartir respuesta")))},onQuery=model::setQuery,onSearch=model::search,
                 onImportModel={modelPicker.launch(arrayOf("*/*"))},onImportCorpus={packPicker.launch(arrayOf("application/zip","application/octet-stream"))},
-                onImportFiles={filesPicker.launch(arrayOf("image/*","audio/*","application/pdf"))},
+                onImportFiles={filesPicker.launch(arrayOf("image/*","audio/*","application/pdf"))},onImportFolder=::pickFolder,
                 onBuildGraph=model::buildGraph,onOpenReview=model::openReview,onCloseReview=model::closeReview,onApproveReview=model::approveReview,onCorrectReview=model::correctReview,onRejectReview=model::rejectReview,onSampleReview=model::sampleReview,
                 onOpenReviewPage={item->model.reviewPageItem(item)?.let{document=it}},
                 onReviewDocument=model::reviewDocument,onReviewPage=model::reviewPage,onReviewPending=model::reviewPending,onApproveRest=model::approveRest,onDocumentOpen=model::documentOpen,
