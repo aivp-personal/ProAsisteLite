@@ -10,7 +10,7 @@ ProAsisteLocal (`com.plantroom.pocket`) loads every chunk to search, which break
 | 1 | Getting thousands of files in | **Done** (`847aa52`, 2026-11-13) |
 | 2 | Choosing the model for answers | **Done** (2026-11-13) |
 | 3 | Sorting and tagging | **Done** (2026-11-13) |
-| 4 | DocLang reader, then graph tables the user guides | Not started |
+| 4 | DocLang reader, then graph tables the user guides | In progress: reader and highlighting done |
 | 5 | Skills and actions on files, saved reports and decisions | Not started |
 
 ## 1. Getting thousands of files in — done
@@ -78,7 +78,17 @@ with merged cells), footnotes, page headers and footers, pictures — in reading
 across a page break linked. FineReader-tagged PDFs keep their full structure; untagged PDFs fall back to text blocks.
 Checked against the Python script's output on the files in `fineparser/out`.
 
-The graph is then built from those blocks:
+**Done (2026-11-13):** `runtime/DocLang.kt` reads a PDF as DocLang 0.9 (tag tree first, letters by marked-content id,
+the script's paragraph repair and page-break threads, loose text placed by position, a text-block fallback for untagged
+PDFs) and writes the XML. `fineparser/out` turned out to hold ABBYY FineParser output, so the reference is
+to_doclang.py itself, run on six public rulings now in `app/src/test/resources/doclang`: words agree at 98.9–100% and the
+tagged files' headings, lists, tables and pictures match exactly. Not ported: text drawn outside the page content (some
+signature stamps) and pictures in untagged PDFs. Of the collections, 21 of 30 sampled Gemelo Legal PDFs and all of
+FineReader-salida carry tags. **Highlighting:** opening a passage (a search result or an answer's source) opens its page
+with the passage highlighted; `runtime/Highlighter.kt` aligns the passage's words with the page's, so it works on any
+text PDF without re-indexing. Checked on the Fold on STC 2154-11, page 14.
+
+Next, the graph is built from those blocks:
 
 - headers, footers and footnotes are skipped, so running titles and folio stamps no longer become facts;
 - the sections of a ruling (VISTOS, CONSIDERANDO, SE RESUELVE, separate votes, signatures) are found from headings,

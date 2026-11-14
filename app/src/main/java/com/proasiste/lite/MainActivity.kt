@@ -148,15 +148,28 @@ class MainActivity:ComponentActivity(){
     var scale by remember(page){mutableFloatStateOf(1f)}
     var offset by remember(page){mutableStateOf(Offset.Zero)}
     val transform=rememberTransformableState{zoom,pan,_->scale=(scale*zoom).coerceIn(1f,5f);offset=if(scale==1f)Offset.Zero else offset+pan}
+    // The page the item points at ("Page 4", "Página 4 · …"), where its passage is highlighted.
+    val target=remember(item.id){Regex("\\d+").find(item.sourceLocation)?.value?.toIntOrNull()}
+    var found by remember(item.id){mutableStateOf<Boolean?>(null)}
     LaunchedEffect(item.id,page){
         image=null;error=null
-        try{val result=withContext(Dispatchers.IO){ParcelFileDescriptor.open(File(item.localPath),ParcelFileDescriptor.MODE_READ_ONLY).use{fd->PdfRenderer(fd).use{renderer->val total=renderer.pageCount;val p=page.coerceIn(0,total-1);renderer.openPage(p).use{pdf->val b=Bitmap.createBitmap(1100,(1100f*pdf.height/pdf.width).toInt().coerceAtLeast(1),Bitmap.Config.ARGB_8888);b.eraseColor(android.graphics.Color.WHITE);pdf.render(b,null,null,PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);Pair(total,b)}}}};pages=result.first;image=result.second}catch(e:Exception){error=e.message}
+        try{val result=withContext(Dispatchers.IO){ParcelFileDescriptor.open(File(item.localPath),ParcelFileDescriptor.MODE_READ_ONLY).use{fd->PdfRenderer(fd).use{renderer->val total=renderer.pageCount;val p=page.coerceIn(0,total-1);renderer.openPage(p).use{pdf->val b=Bitmap.createBitmap(1100,(1100f*pdf.height/pdf.width).toInt().coerceAtLeast(1),Bitmap.Config.ARGB_8888);b.eraseColor(android.graphics.Color.WHITE);pdf.render(b,null,null,PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);Pair(total,b)}}}};pages=result.first;image=result.second
+            // Highlight the passage on its page: found by its words, painted onto the page so it zooms with it.
+            if(target==page+1&&item.excerpt.isNotBlank()){
+                val rects=withContext(Dispatchers.IO){runCatching{com.proasiste.lite.runtime.Highlighter.find(File(item.localPath),page+1,item.excerpt)}.getOrDefault(emptyList())}
+                found=rects.isNotEmpty()
+                if(rects.isNotEmpty())image=result.second.copy(Bitmap.Config.ARGB_8888,true).also{b->
+                    val c=android.graphics.Canvas(b);val paint=android.graphics.Paint().apply{color=android.graphics.Color.argb(130,230,190,90)}
+                    rects.forEach{r->c.drawRect(r.left*b.width,r.top*b.height,r.right*b.width,r.bottom*b.height,paint)}}
+            }
+        }catch(e:Exception){error=e.message}
     }
     androidx.compose.ui.window.Dialog(onDismissRequest=onClose,properties=androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth=false)){
         MaterialTheme(colorScheme=darkColorScheme(),typography=BrandTypography){
             Column(Modifier.fillMaxSize().background(Color(0xFF0A0A0A)).statusBarsPadding().navigationBarsPadding().padding(16.dp)){
                 Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){TextButton(onClick=onClose){Text(tr("Close", "Cerrar"))};Text("${page+1} / $pages",Modifier.padding(12.dp));Spacer(Modifier.weight(1f));ReviewLabel(pageReview[page+1],enabled=true,onPending={onReviewPending(page+1)},onAll={onReview(page+1)});Text(item.assetId,Modifier.padding(12.dp))}
                 Text(item.title,style=MaterialTheme.typography.titleMedium)
+                if(target==page+1&&found!=null)Text(if(found==true)tr("The passage is highlighted on this page.","El pasaje está resaltado en esta página.") else tr("Couldn't find the passage's exact words on this page.","No se encontraron las palabras exactas del pasaje en esta página."),color=Color(0xFF9B9B9B),fontSize=androidx.compose.ui.unit.TextUnit(12f,androidx.compose.ui.unit.TextUnitType.Sp))
                 Box(Modifier.weight(1f).fillMaxWidth().padding(vertical=12.dp).transformable(transform)){image?.let{Image(it.asImageBitmap(),tr("Report page ${page+1}", "Página ${page+1} del informe"),Modifier.fillMaxSize().graphicsLayer(scaleX=scale,scaleY=scale,translationX=offset.x,translationY=offset.y))}?:if(error==null)CircularProgressIndicator()else Text(error!!)}
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){TextButton(onClick={page--},enabled=page>0){Text(tr("Previous", "Anterior"))};TextButton(onClick={page++},enabled=page+1<pages){Text(tr("Next", "Siguiente"))}}
             }
