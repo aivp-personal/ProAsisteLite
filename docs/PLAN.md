@@ -10,7 +10,7 @@ ProAsisteLocal (`com.plantroom.pocket`) loads every chunk to search, which break
 | 1 | Getting thousands of files in | **Done** (`847aa52`, 2026-11-13) |
 | 2 | Choosing the model for answers | **Done** (2026-11-13) |
 | 3 | Sorting and tagging | **Done** (2026-11-13) |
-| 4 | DocLang reader, then graph tables the user guides | In progress: reader and highlighting done |
+| 4 | DocLang reader, then graph tables the user guides | In progress: reader, highlighting and graph from blocks done |
 | 5 | Skills and actions on files, saved reports and decisions | Not started |
 
 ## 1. Getting thousands of files in — done
@@ -88,7 +88,21 @@ FineReader-salida carry tags. **Highlighting:** opening a passage (a search resu
 with the passage highlighted; `runtime/Highlighter.kt` aligns the passage's words with the page's, so it works on any
 text PDF without re-indexing. Checked on the Fold on STC 2154-11, page 14.
 
-Next, the graph is built from those blocks:
+**Done (2026-11-14), graph from blocks:** `runtime/DocPages.kt` turns a document's blocks into the graph's page text:
+no running headers, footers or pictures, text the tag tree left out put back where it sits on the page, footnotes at the
+page's end, tables a row per line. Facts are checked against pages where a paragraph split by a page break is also given
+whole. Each fact and review item keeps its place (schema 7, `graph_edges.place` and `graph_review.place`:
+"page:x0,y0,x1,y1;…" on the 500 grid), kept through approval and same-page corrections and dropped when a fact moves page;
+the viewer highlights it, on both pages of a split paragraph, and says where it continues. PDFs the reader finds little
+text in keep the old page reader. Untagged PDFs now read as paragraphs (lines grouped by the page's usual spacing).
+Before switching, the ruling skeleton was compared on old and new text over seven rulings; that found, and these
+changes fix: a considerando mark could join a heading on the line above; a TC ruling naming itself only as "esta
+Magistratura Constitucional" was taken for the pending case's court, and its number for the pending case's role (a file
+name like "STC 1810-10" now gives the number); signature lists lost names after "los Ministros…" and did not split on
+"e". On the Fold, STC 1810-10 went from 24 facts kept / 45 dropped (wrong court) to 41 kept / 5 dropped / 9 held back,
+all 41 with a place, for $0.014; a fact opened on its page with its paragraph highlighted.
+
+The graph is built from those blocks:
 
 - headers, footers and footnotes are skipped, so running titles and folio stamps no longer become facts;
 - the sections of a ruling (VISTOS, CONSIDERANDO, SE RESUELVE, separate votes, signatures) are found from headings,

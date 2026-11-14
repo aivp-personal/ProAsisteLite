@@ -51,10 +51,15 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
         return Reply(null, spent)
     }
 
-    /** [alsoKnown] are rulings and ministers the project graph already holds: an AI fact may name them without being held back. */
-    suspend fun extract(key: String, title: String, pages: List<PageText>, alsoKnown: Set<String> = emptySet(), onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }): Result {
+    /**
+     * [alsoKnown] are rulings and ministers the project graph already holds: an AI fact may name them without being held
+     * back. [checkPages] is the text facts are checked against, by page; by default the text sent. Passing pages where a
+     * paragraph split by a page break is also given whole lets a fact whose words straddle the break pass on its page.
+     */
+    suspend fun extract(key: String, title: String, pages: List<PageText>, alsoKnown: Set<String> = emptySet(), onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }, checkPages: List<PageText> = pages): Result {
         val readable = pages.filter { it.text.isNotBlank() }
-        if (LegalFacts.isRuling(readable) && readable.sumOf { it.text.length } <= LEGAL_MAX_CHARS) return legal(key, title, readable, alsoKnown, onProgress)
+        val checked = checkPages.associateBy { it.page }
+        if (LegalFacts.isRuling(readable) && readable.sumOf { it.text.length } <= LEGAL_MAX_CHARS) return legal(key, title, readable, alsoKnown, onProgress, readable.map { checked[it.page] ?: it })
         val done = AtomicInteger()
         onProgress(0, readable.size)
         val slots = Semaphore(PARALLEL)
@@ -64,7 +69,7 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
                     slots.withPermit {
                         val reply = ask(key, request(INSTRUCTIONS, SCHEMA, title, listOf(page)))
                         val general = "$MODEL@$GENERAL_PROMPT_VERSION"
-                        val (kept, rejected) = reply.content?.let { parse(it, page) }?.let { (k, r) -> k.map { f -> f.copy(extractor = general) } to r } ?: (emptyList<NewFact>() to 0)
+                        val (kept, rejected) = reply.content?.let { parse(it, checked[page.page] ?: page) }?.let { (k, r) -> k.map { f -> f.copy(extractor = general) } to r } ?: (emptyList<NewFact>() to 0)
                         onProgress(done.incrementAndGet(), readable.size)
                         Triple(kept, rejected, reply)
                     }
@@ -80,7 +85,7 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
      * content, told the skeleton's names so it reuses them. AI facts are checked against the ruling, re-attached to a
      * dissent when their words sit there, and held back when they name a ruling or minister the skeleton never saw.
      */
-    private suspend fun legal(key: String, title: String, pages: List<PageText>, alsoKnown: Set<String>, onProgress: (done: Int, total: Int) -> Unit): Result {
+    private suspend fun legal(key: String, title: String, pages: List<PageText>, alsoKnown: Set<String>, onProgress: (done: Int, total: Int) -> Unit, checkPages: List<PageText> = pages): Result {
         val thisRuling = LegalFacts.thisRuling(pages, title)
         val skeleton = RulingSkeleton.of(pages, title)
         debugLog("skeleton: ${skeleton?.facts?.size ?: 0} facts, ${skeleton?.ministers?.size ?: 0} ministers, ${skeleton?.knownRulings?.size ?: 0} rulings")
@@ -106,7 +111,7 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
             }
         }
         val all = LegalFacts.dedupe(attributed)
-        val checker = LegalFacts.Checker(pages, thisRuling)
+        val checker = LegalFacts.Checker(checkPages, thisRuling)
         val ministers = skeleton?.ministers?.map { RulingSkeleton.fold(it) }.orEmpty()
         val alsoKnownFolded = alsoKnown.map { RulingSkeleton.fold(it) }.toSet()
         fun known(f: NewFact): Boolean {

@@ -16,12 +16,14 @@ data class GraphEdge(val from: GraphNode, val to: GraphNode, val type: String, v
 /** A fact to add: a link between two named nodes, the sentence it states, and the page it comes from. */
 data class NewFact(val page: Int, val subjectType: String, val subject: String, val relation: String, val objectType: String, val obj: String, val statement: String,
                    /** Who wrote the fact: "reglas", "deepseek/<model>@<prompt version>", "revisado", or "" for an import. */
-                   val extractor: String = "") {
+                   val extractor: String = "",
+                   /** Where the fact sits: "page:x0,y0,x1,y1;…" on DocLang's 500 grid (both halves of a split paragraph), or "" when unknown. */
+                   val place: String = "") {
     fun complete() = page >= 1 && listOf(subjectType, subject, relation, objectType, obj, statement).all { it.isNotBlank() } && statement.length <= 600
 }
 
 /** A link's fact ranked for a question. [similarity] is the fact sentence's cosine to the question. */
-data class GraphFact(val sourceId: String, val page: Int, val fact: String, val similarity: Float)
+data class GraphFact(val sourceId: String, val page: Int, val fact: String, val similarity: Float, val place: String = "")
 
 data class Reached(val node: GraphNode, val hops: Int)
 
@@ -53,7 +55,7 @@ class Graph(private val store: Store) {
      * Links [from] to [to], citing [sourceId] at [page]. Both nodes and the source must belong to [project].
      * Returns false when this exact link was already recorded.
      */
-    fun addEdge(project: String, from: GraphNode, to: GraphNode, type: String, sourceId: String, page: Int, fact: String = "", vector: FloatArray? = null, extractor: String = ""): Boolean {
+    fun addEdge(project: String, from: GraphNode, to: GraphNode, type: String, sourceId: String, page: Int, fact: String = "", vector: FloatArray? = null, extractor: String = "", place: String = ""): Boolean {
         val cleanType = type.trim()
         require(cleanType.isNotEmpty()) { "A link needs a type." }
         return db.inTransaction {
@@ -64,7 +66,7 @@ class Graph(private val store: Store) {
             require(sourceOk) { "Source $sourceId is not in project $project." }
             insertWithOnConflict("graph_edges", null, ContentValues().apply {
                 put("from_id", from.id); put("to_id", to.id); put("type", cleanType); put("source", sourceId); put("page", page)
-                put("fact", fact.trim()); put("extractor", extractor); vector?.let { put("vector", encode(it)) }
+                put("fact", fact.trim()); put("extractor", extractor); put("place", place); vector?.let { put("vector", encode(it)) }
             }, SQLiteDatabase.CONFLICT_IGNORE) != -1L
         }
     }
@@ -126,9 +128,9 @@ class Graph(private val store: Store) {
      * two node names) each rank them, fused by rank, as passages are. Facts are short and few, so all are scored.
      */
     fun facts(project: String, queryVector: FloatArray?, queryText: String, limit: Int): List<GraphFact> {
-        data class Row(val sourceId: String, val page: Int, val fact: String, val words: List<String>, val similarity: Float)
+        data class Row(val sourceId: String, val page: Int, val fact: String, val words: List<String>, val similarity: Float, val place: String)
         val rows = db.rawQuery(
-            """SELECT e.source, e.page, e.fact, f.name, t.name, e.vector FROM graph_edges e
+            """SELECT e.source, e.page, e.fact, f.name, t.name, e.vector, e.place FROM graph_edges e
                JOIN graph_nodes f ON f.id = e.from_id JOIN graph_nodes t ON t.id = e.to_id
                WHERE f.building = ? AND e.fact <> ''""", arrayOf(project),
         ).use { c ->
@@ -136,7 +138,7 @@ class Graph(private val store: Store) {
                 while (c.moveToNext()) {
                     val fact = c.getString(2)
                     val similarity = c.getBlob(5)?.let { blob -> queryVector?.let { Store.cosine(it, decode(blob)) } } ?: Float.NaN
-                    add(Row(c.getString(0), c.getInt(1), fact, stems("$fact ${c.getString(3)} ${c.getString(4)}"), similarity))
+                    add(Row(c.getString(0), c.getInt(1), fact, stems("$fact ${c.getString(3)} ${c.getString(4)}"), similarity, c.getString(6) ?: ""))
                 }
             }
         }
@@ -161,7 +163,7 @@ class Graph(private val store: Store) {
             rows.indices.filter { bm25[it] > 0 }.sortedByDescending { bm25[it] }.forEachIndexed { rank, i -> fused[i] += 1.0 / (FUSION_K + rank) }
         }
         return rows.indices.filter { fused[it] > 0 }.sortedByDescending { fused[it] }.take(limit)
-            .map { GraphFact(rows[it].sourceId, rows[it].page, rows[it].fact, rows[it].similarity) }
+            .map { GraphFact(rows[it].sourceId, rows[it].page, rows[it].fact, rows[it].similarity, rows[it].place) }
     }
 
     /** Every fact in [project] with one of [relations], in the order of the document: the graph's own answer to a list question. */
@@ -169,10 +171,10 @@ class Graph(private val store: Store) {
         if (relations.isEmpty()) return emptyList()
         val marks = relations.joinToString(",") { "?" }
         return db.rawQuery(
-            """SELECT e.source, e.page, e.fact FROM graph_edges e JOIN graph_nodes f ON f.id = e.from_id
+            """SELECT e.source, e.page, e.fact, e.place FROM graph_edges e JOIN graph_nodes f ON f.id = e.from_id
                WHERE f.building = ? AND e.fact <> '' AND e.type IN ($marks) ORDER BY e.source, e.page, e.id LIMIT $limit""",
             (listOf(project) + relations).toTypedArray(),
-        ).use { c -> buildList { while (c.moveToNext()) add(GraphFact(c.getString(0), c.getInt(1), c.getString(2), Float.NaN)) } }.distinctBy { it.fact }
+        ).use { c -> buildList { while (c.moveToNext()) add(GraphFact(c.getString(0), c.getInt(1), c.getString(2), Float.NaN, c.getString(3) ?: "")) } }.distinctBy { it.fact }
     }
 
     /**
@@ -225,7 +227,7 @@ class Graph(private val store: Store) {
             all.zip(vectors).count { (f, vector) ->
                 val from = upsertNode(project, f.subjectType, f.subject)
                 val to = upsertNode(project, f.objectType, f.obj)
-                addEdge(project, from, to, f.relation, sourceId, f.page, f.statement, vector, f.extractor)
+                addEdge(project, from, to, f.relation, sourceId, f.page, f.statement, vector, f.extractor, f.place)
             }
         }
     }
@@ -264,7 +266,7 @@ class Graph(private val store: Store) {
                     put("building", project); put("source", sourceId); put("page", f.page)
                     put("from_type", f.subjectType); put("from_name", f.subject); put("relation", f.relation)
                     put("to_type", f.objectType); put("to_name", f.obj); put("statement", f.statement)
-                    put("reason", reason); put("extractor", extractor); put("original_key", decisionKey(f))
+                    put("reason", reason); put("extractor", extractor); put("original_key", decisionKey(f)); put("place", f.place)
                 })
             }
         }
@@ -274,18 +276,18 @@ class Graph(private val store: Store) {
         .use { it.moveToFirst(); it.getInt(0) }
 
     fun pendingReviews(project: String): List<ReviewItem> = db.rawQuery(
-        "SELECT id, source, page, from_type, from_name, relation, to_type, to_name, statement, reason, extractor FROM graph_review WHERE building = ? AND status = 'pendiente' ORDER BY source, reason, page, id",
+        "SELECT id, source, page, from_type, from_name, relation, to_type, to_name, statement, reason, extractor, place FROM graph_review WHERE building = ? AND status = 'pendiente' ORDER BY source, reason, page, id",
         arrayOf(project),
     ).use { c ->
         buildList {
             while (c.moveToNext()) add(ReviewItem(c.getLong(0), c.getString(1),
-                NewFact(c.getInt(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(8), c.getString(10)), c.getString(9), "pendiente"))
+                NewFact(c.getInt(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(8), c.getString(10), c.getString(11) ?: ""), c.getString(9), "pendiente"))
         }
     }
 
     private fun reviewItem(id: Long): ReviewItem? = db.rawQuery(
-        "SELECT id, source, page, from_type, from_name, relation, to_type, to_name, statement, reason, extractor, status FROM graph_review WHERE id = ?", arrayOf(id.toString()),
-    ).use { c -> if (c.moveToFirst()) ReviewItem(c.getLong(0), c.getString(1), NewFact(c.getInt(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(8), c.getString(10)), c.getString(9), c.getString(11)) else null }
+        "SELECT id, source, page, from_type, from_name, relation, to_type, to_name, statement, reason, extractor, status, place FROM graph_review WHERE id = ?", arrayOf(id.toString()),
+    ).use { c -> if (c.moveToFirst()) ReviewItem(c.getLong(0), c.getString(1), NewFact(c.getInt(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(8), c.getString(10), c.getString(12) ?: ""), c.getString(9), c.getString(11)) else null }
 
     /**
      * Puts a held-back fact into the graph, as the model wrote it or as corrected, and records the decision.
@@ -293,16 +295,17 @@ class Graph(private val store: Store) {
      */
     fun approveReview(project: String, id: Long, corrected: NewFact?, embed: (String) -> FloatArray): Boolean {
         val item = reviewItem(id)?.takeIf { it.status == "pendiente" } ?: return false
-        val fact = (corrected ?: item.fact).copy(extractor = "revisado")
+        val edited = corrected?.copy(place = item.fact.place)?.takeIf { it != item.fact }
+        val fact = (edited ?: item.fact).copy(extractor = "revisado", place = if (edited == null || edited.page == item.fact.page) item.fact.place else "")
         require(fact.complete()) { "An approved fact needs a page, both names and a statement." }
         val vector = embed(fact.statement)
         db.inTransaction {
             val from = upsertNode(project, fact.subjectType, fact.subject)
             val to = upsertNode(project, fact.objectType, fact.obj)
-            addEdge(project, from, to, fact.relation, item.sourceId, fact.page, fact.statement, vector, fact.extractor)
+            addEdge(project, from, to, fact.relation, item.sourceId, fact.page, fact.statement, vector, fact.extractor, fact.place)
             update("graph_review", ContentValues().apply {
-                put("status", if (corrected == null || corrected == item.fact) "aprobado" else "corregido"); put("decided_at", System.currentTimeMillis())
-                if (corrected != null) { put("page", fact.page); put("from_type", fact.subjectType); put("from_name", fact.subject); put("relation", fact.relation); put("to_type", fact.objectType); put("to_name", fact.obj); put("statement", fact.statement) }
+                put("status", if (edited == null) "aprobado" else "corregido"); put("decided_at", System.currentTimeMillis())
+                if (edited != null) { put("page", fact.page); put("from_type", fact.subjectType); put("from_name", fact.subject); put("relation", fact.relation); put("to_type", fact.objectType); put("to_name", fact.obj); put("statement", fact.statement) }
             }, "id = ?", arrayOf(id.toString()))
         }
         return true
@@ -356,14 +359,14 @@ class Graph(private val store: Store) {
     /** Replaces a kept fact with the steward's [corrected] version and records the correction against the original. */
     fun correctKept(project: String, edgeId: Long, corrected: NewFact, embed: (String) -> FloatArray): Boolean {
         val item = sampleItem(edgeId) ?: return false
-        val fact = corrected.copy(extractor = "revisado")
+        val fact = corrected.copy(extractor = "revisado", place = if (corrected.page == item.fact.page) item.fact.place else "")
         require(fact.complete()) { "A corrected fact needs a page, both names and a statement." }
         val vector = embed(fact.statement)
         db.inTransaction {
             delete("graph_edges", "id = ?", arrayOf(edgeId.toString()))
             val from = upsertNode(project, fact.subjectType, fact.subject)
             val to = upsertNode(project, fact.objectType, fact.obj)
-            addEdge(project, from, to, fact.relation, item.sourceId, fact.page, fact.statement, vector, fact.extractor)
+            addEdge(project, from, to, fact.relation, item.sourceId, fact.page, fact.statement, vector, fact.extractor, fact.place)
             execSQL("DELETE FROM graph_nodes WHERE building = ? AND NOT EXISTS (SELECT 1 FROM graph_edges e WHERE e.from_id = graph_nodes.id OR e.to_id = graph_nodes.id)", arrayOf(project))
             recordDecision(project, item, "página", "corregido", fact)
         }
@@ -382,9 +385,9 @@ class Graph(private val store: Store) {
     }
 
     private fun sampleItem(edgeId: Long): ReviewItem? = db.rawQuery(
-        """SELECT e.source, e.page, f.type, f.name, e.type, t.type, t.name, e.fact, e.extractor FROM graph_edges e
+        """SELECT e.source, e.page, f.type, f.name, e.type, t.type, t.name, e.fact, e.extractor, e.place FROM graph_edges e
            JOIN graph_nodes f ON f.id = e.from_id JOIN graph_nodes t ON t.id = e.to_id WHERE e.id = ?""", arrayOf(edgeId.toString()),
-    ).use { c -> if (c.moveToFirst()) ReviewItem(-edgeId, c.getString(0), NewFact(c.getInt(1), c.getString(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(8)), "muestra", "muestra", edgeId) else null }
+    ).use { c -> if (c.moveToFirst()) ReviewItem(-edgeId, c.getString(0), NewFact(c.getInt(1), c.getString(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(8), c.getString(9) ?: ""), "muestra", "muestra", edgeId) else null }
 
     // ---- Review by document and page: everything the graph says about a page, right or wrong ----
 
@@ -422,14 +425,14 @@ class Graph(private val store: Store) {
         val pageFilter = if (page != null) " AND page = ?" else ""
         val args = listOfNotNull(sourceId, page?.toString()).toTypedArray()
         val pending = db.rawQuery(
-            "SELECT id, page, from_type, from_name, relation, to_type, to_name, statement, reason, extractor FROM graph_review WHERE source = ? AND status = 'pendiente'$pageFilter ORDER BY page, id", args,
-        ).use { c -> buildList { while (c.moveToNext()) add(ReviewItem(c.getLong(0), sourceId, NewFact(c.getInt(1), c.getString(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(9)), c.getString(8), "pendiente")) } }
+            "SELECT id, page, from_type, from_name, relation, to_type, to_name, statement, reason, extractor, place FROM graph_review WHERE source = ? AND status = 'pendiente'$pageFilter ORDER BY page, id", args,
+        ).use { c -> buildList { while (c.moveToNext()) add(ReviewItem(c.getLong(0), sourceId, NewFact(c.getInt(1), c.getString(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(9), c.getString(10) ?: ""), c.getString(8), "pendiente")) } }
         if (pendingOnly) return pending
         val kept = db.rawQuery(
-            """SELECT e.id, e.page, f.type, f.name, e.type, t.type, t.name, e.fact, e.extractor FROM graph_edges e
+            """SELECT e.id, e.page, f.type, f.name, e.type, t.type, t.name, e.fact, e.extractor, e.place FROM graph_edges e
                JOIN graph_nodes f ON f.id = e.from_id JOIN graph_nodes t ON t.id = e.to_id
                WHERE e.source = ? AND e.fact <> ''${pageFilter.replace("page", "e.page")} ORDER BY e.page, e.extractor = 'reglas', e.id""", args,
-        ).use { c -> buildList { while (c.moveToNext()) add(ReviewItem(-c.getLong(0), sourceId, NewFact(c.getInt(1), c.getString(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(8)), "", "grafo", c.getLong(0))) } }
+        ).use { c -> buildList { while (c.moveToNext()) add(ReviewItem(-c.getLong(0), sourceId, NewFact(c.getInt(1), c.getString(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6), c.getString(7), c.getString(8), c.getString(9) ?: ""), "", "grafo", c.getLong(0))) } }
         return (pending + kept).sortedBy { it.fact.page } // stable: within a page, pending stays first
     }
 

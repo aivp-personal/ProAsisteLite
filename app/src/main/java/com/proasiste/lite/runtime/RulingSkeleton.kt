@@ -297,7 +297,9 @@ class RulingSkeleton private constructor(
         fun ministers(text: String): List<String> {
             val m = BLOCK.findAll(text).lastOrNull() ?: return emptyList()
             val raw = TITLES.replace(m.groupValues[1].replace(Regex("\\s+"), " "), " ")
-            return raw.split(Regex(",|\\s+y\\s+")).map { it.trim(' ', '.', ',', ';') }
+            // "y" before an i-sound is written "e" ("… Quesney e Iván …"); a piece left starting with "los"/"las" lost its
+            // title only ("los Ministros señores Hernán …"): names never start with a lowercase word.
+            return raw.split(Regex(",|\\s+[ye]\\s+")).map { it.trim(' ', '.', ',', ';').replace(Regex("^(?:los|las)\\s+"), "") }
                 .filter { it.split(" ").size >= 2 && it.first().isUpperCase() }
                 .map { it.replace(Regex("\\s+"), " ") }
         }
@@ -327,7 +329,8 @@ class RulingSkeleton private constructor(
             val opening: String get() = text.replace(Regex("\\s+"), " ").let { t -> t.removePrefix(t.substringBefore("Que").takeIf { it.length < 40 } ?: "").trim() }.take(260).let { if (it.length == 260) "$it…" else it }
         }
 
-        private val ORDINAL_MARK = Regex("(?m)^[ \\t]*((?:[A-ZÁÉÍÓÚ]{4,}\\s?){1,3}):\\s*(?=Que\\b|QUE\\b)")
+        // The mark's words sit on one line: across a line break, a heading above ("…CONSTITUCIONALIDAD") would join the mark.
+        private val ORDINAL_MARK = Regex("(?m)^[ \\t]*((?:[A-ZÁÉÍÓÚ]{4,}[ \\t]?){1,3}):\\s*(?=Que\\b|QUE\\b)")
         private val NUMBER_MARK = Regex("(?m)^[ \\t]*(\\d{1,3})\\s*[°º]\\s*[.)]?\\s*[-–]?\\s*(?=Que\\b|QUE\\b)")
         private val HEADING = Regex("(?m)^[ \\t]*([IVX]{1,5})\\.\\s*-?\\s*([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ ,;:()'\\-]{3,}?)\\s*$")
         private val UNITS = mapOf("primero" to 1, "segundo" to 2, "tercero" to 3, "cuarto" to 4, "quinto" to 5, "sexto" to 6, "septimo" to 7, "octavo" to 8, "noveno" to 9)

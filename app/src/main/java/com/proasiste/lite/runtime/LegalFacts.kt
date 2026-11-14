@@ -101,7 +101,9 @@ object LegalFacts {
      * the year is part of a ruling's identity there; the Tribunal Constitucional numbers rulings in one sequence.
      */
     enum class Court(val code: String, val prefix: String, val tribunal: String, val yearly: Boolean, pattern: String) {
-        TC("TC", "STC Rol", "Tribunal Constitucional", false, "tribunal\\s+constitucional|\\bSTC\\b"),
+        // A TC ruling may name itself only as "esta Magistratura Constitucional" on its first page, where it also names the
+        // court of the pending case ("Corte de Apelaciones"): the TC's own words must win.
+        TC("TC", "STC Rol", "Tribunal Constitucional", false, "tribunal\\s+constitucional|\\bSTC\\b|magistratura\\s+constitucional|inaplicabilidad\\s+por\\s+inconstitucionalidad"),
         CS("CS", "SCS Rol", "Corte Suprema", true, "corte\\s+suprema|\\bSCS\\b"),
         CA("CA", "Corte de Apelaciones Rol", "Corte de Apelaciones", true, "corte\\s+de\\s+apelaciones"),
         TER("TER", "Tribunal Electoral Regional Rol", "Tribunal Electoral Regional", true, "tribunal\\s+electoral\\s+regional"),
@@ -140,8 +142,12 @@ object LegalFacts {
     fun thisRuling(pages: List<DeepSeekFacts.PageText>, title: String): String {
         val first = pages.firstOrNull()?.text.orEmpty()
         val court = courtOf(first) ?: Court.TC
+        // A file named after its ruling ("STC 1810-10 …") gives its own number; the first role on page 1 is often the
+        // pending case's ("Rol N° 3868-2010, seguido ante la Corte de Apelaciones").
+        TITLE_ROLE.find(title)?.let { m -> return canonicalRuling(m.value, if (m.groupValues[1].uppercase() == "SCS") Court.CS else Court.TC) }
         return ROLE.find(first)?.let { canonicalRuling(it.value, court) } ?: title
     }
+    private val TITLE_ROLE = Regex("\\b(STC|SCS)\\s+(?:Rol\\s*)?(?:N[°º]\\s*)?\\d[\\d.]*(?:-\\d{2,4})?", RegexOption.IGNORE_CASE)
 
     /**
      * A ruling's identity: `TC:17292` for the Tribunal Constitucional, whose numbers never repeat, and `CS:1234-2020`

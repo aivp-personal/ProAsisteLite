@@ -47,6 +47,8 @@ data class UiItem(
     val synthetic: Boolean = true,
     val score: Float? = null,
     val tags: List<String> = emptyList(),
+    /** Boxes to highlight when the PDF opens, "page:x0,y0,x1,y1;…" on DocLang's 500 grid; "" to find [excerpt]'s words instead. */
+    val highlight: String = "",
 )
 
 /** A tag in use in the project and how many files carry it. */
@@ -112,6 +114,8 @@ data class UiReviewItem(
     val extractor: String = "",
     /** The sentence on the page that best supports a kept AI fact; "" when no sentence does; null when not looked up. */
     val evidence: String? = null,
+    /** Where the fact sits on the page, from the block it was found in; "" when unknown (older facts). */
+    val place: String = "",
 ) {
     val checked: Boolean get() = extractor == "revisado"
     val byRules: Boolean get() = extractor == "reglas"

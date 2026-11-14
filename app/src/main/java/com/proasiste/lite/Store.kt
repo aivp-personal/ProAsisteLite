@@ -305,6 +305,12 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
                 "CREATE TABLE tag_queue(source TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,building TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pendiente',note TEXT NOT NULL DEFAULT '')",
                 "CREATE INDEX tag_queue_status ON tag_queue(status,building)",
             ),
+            // 7: where each graph fact sits on its page, from the DocLang block it was found in ("page:x0,y0,x1,y1;…" on
+            // the 500 grid, both halves of a paragraph split by a page break), so a fact opens with its paragraph highlighted.
+            listOf(
+                "ALTER TABLE graph_edges ADD COLUMN place TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE graph_review ADD COLUMN place TEXT NOT NULL DEFAULT ''",
+            ),
         )
         private val SOURCE_COLUMNS=arrayOf("id","path","type","building","asset","date","title","synthetic","indexed","error","pages","no_text_pages")
         /** Import queue statuses. */

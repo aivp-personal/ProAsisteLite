@@ -31,7 +31,9 @@ object DocLang {
     const val GENERATOR = "ProAsisteLite DocLang reader (port of to_doclang.py)"
 
     /** One block. [box] is x_min, y_min, x_max, y_max on the 500 grid; [thread] links the halves of a split element (0 = none). */
-    data class Block(val page: Int, val kind: String, val text: String, val box: List<Int>?, val level: Int = 0, val thread: Int = 0, internal val body: String? = null)
+    data class Block(val page: Int, val kind: String, val text: String, val box: List<Int>?, val level: Int = 0, val thread: Int = 0, internal val body: String? = null,
+                     /** Text the tag tree left out, placed by its position rather than by the tree's order. */
+                     val loose: Boolean = false)
     /** A read document: its blocks in order, page count, whether the tag tree was used, and what was found. */
     class Doc(val blocks: List<Block>, val pages: Int, val tagged: Boolean, val stats: Map<String, Int>)
 
@@ -314,14 +316,20 @@ object DocLang {
                 val line = lines.lastOrNull { l -> val f = l.first(); kotlin.math.abs(f.top - c.top) < 0.5f * max(1f, f.h) }
                 if (line != null) line += c else lines += mutableListOf(c)
             }
-            data class G(var x0: Float, var top: Float, var x1: Float, var bottom: Float, var text: String)
+            data class G(var x0: Float, var top: Float, var x1: Float, var bottom: Float, var text: String, var lastX0: Float)
+            val sorted = lines.map { it.sortedBy { c -> c.x0 } }.sortedWith(compareBy({ it.first().top }, { it.first().x0 }))
+            // The page's usual gap between lines, so double-spaced text still reads as paragraphs.
+            val gaps = sorted.zipWithNext { a, b -> b.minOf { it.top } - a.maxOf { it.bottom } }.filter { it > 0 }.sorted()
+            val usual = if (gaps.isEmpty()) 0f else gaps[gaps.size / 2]
             val groups = mutableListOf<G>()
-            for (l in lines.map { it.sortedBy { c -> c.x0 } }.sortedWith(compareBy({ it.first().top }, { it.first().x0 }))) {
+            for (l in sorted) {
                 val t = join(l); if (t.isEmpty()) continue
                 val x0 = l.minOf { it.x0 }; val x1 = l.maxOf { it.x1 }; val top = l.minOf { it.top }; val bottom = l.maxOf { it.bottom }; val h = bottom - top
                 val g = groups.lastOrNull()
-                if (g != null && top - g.bottom < 0.8f * h && kotlin.math.abs(x0 - g.x0) < 4 * h) { g.text += " $t"; g.x0 = min(g.x0, x0); g.x1 = max(g.x1, x1); g.bottom = max(g.bottom, bottom) }
-                else groups += G(x0, top, x1, bottom, t)
+                // A new paragraph: a gap wider than usual, a jump sideways, or an indented line after a sentence's end.
+                val indented = g != null && x0 > g.lastX0 + 1.5f * h && Regex("[.:;]\\s*$").containsMatchIn(g.text)
+                if (g != null && top - g.bottom < max(0.8f * h, 1.4f * usual) && kotlin.math.abs(x0 - g.x0) < 4 * h && !indented) { g.text += " $t"; g.x0 = min(g.x0, x0); g.x1 = max(g.x1, x1); g.bottom = max(g.bottom, bottom); g.lastX0 = x0 }
+                else groups += G(x0, top, x1, bottom, t, x0)
             }
             return groups.map { floatArrayOf(it.x0, it.top, it.x1, it.bottom) to clean(it.text) }
         }
@@ -339,7 +347,7 @@ object DocLang {
                     val m = (box[1] + box[3]) / 2 / h
                     val (zone, kind) = if (m < 0.15f) "header" to "page_header" else if (m > 0.85f) "footer" to "page_footer" else "body" to "text"
                     val b = norm(page, box)
-                    out.getOrPut(page) { HashMap() }.getOrPut(zone) { mutableListOf() } += Block(page, kind, text, b, body = "<$kind>${loc(b)}${esc(text)}</$kind>")
+                    out.getOrPut(page) { HashMap() }.getOrPut(zone) { mutableListOf() } += Block(page, kind, text, b, body = "<$kind>${loc(b)}${esc(text)}</$kind>", loose = true)
                     count("untagged_$kind")
                 }
             }

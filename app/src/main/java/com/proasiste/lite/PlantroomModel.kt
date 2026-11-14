@@ -14,6 +14,8 @@ import com.proasiste.lite.runtime.NanoAnswerer
 import com.proasiste.lite.runtime.TableRows
 import com.proasiste.lite.runtime.PdfText
 import com.proasiste.lite.runtime.DeepSeekFacts
+import com.proasiste.lite.runtime.DocLang
+import com.proasiste.lite.runtime.DocPages
 import com.proasiste.lite.runtime.Pseudonymizer
 import com.proasiste.lite.ui.*
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
@@ -362,21 +364,34 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         check(pdfs.isNotEmpty()){tr("Index this project's PDFs first.", "Primero indexa los PDF de este proyecto.")}
         var added=0;var dropped=0;var pages=0;var cost=0.0;var review=0;var legal=0;var failed=0;var kept=0
         for((i,s) in pdfs.withIndex()){
-            val texts=withContext(worker){pageTexts(s)}
+            val text=withContext(worker){graphText(s)}
             val alsoKnown=withContext(worker){graph.nodeNames(project,"Fallo")+graph.nodeNames(project,"Ministro")}
-            val result=deepSeek.extract(key,s.title,texts,alsoKnown){done,total->state=state.copy(status=tr("DeepSeek · ${s.title} · $done of $total parts done", "DeepSeek · ${s.title} · $done de $total partes listas"),progress=(i+done.toFloat()/total.coerceAtLeast(1))/pdfs.size)}
+            val result=deepSeek.extract(key,s.title,text.pages,alsoKnown,{done,total->state=state.copy(status=tr("DeepSeek · ${s.title} · $done of $total parts done", "DeepSeek · ${s.title} · $done de $total partes listas"),progress=(i+done.toFloat()/total.coerceAtLeast(1))/pdfs.size)},text.checkPages)
+            // Each fact keeps the block it was found in, so it opens on its page with that paragraph highlighted.
+            fun placed(f:com.proasiste.lite.graph.NewFact)=text.doc?.let{d->f.copy(place=DocPages.locate(d,f))}?:f
             // A partial result never replaces a complete one: if a part failed and the file has facts, they stay.
             val keepOld=result.failedParts>0&&withContext(worker){graph.factCounts(project)[s.id]?:0}>0
-            if(keepOld)kept++ else added+=withContext(worker){graph.replaceFacts(project,s.id,result.facts){embedder.embedText(it)}.also{graph.saveReview(project,s.id,result.reviewItems,result.extractor)}}
+            if(keepOld)kept++ else added+=withContext(worker){graph.replaceFacts(project,s.id,result.facts.map(::placed)){embedder.embedText(it)}.also{graph.saveReview(project,s.id,result.reviewItems.map{(f,r)->placed(f) to r},result.extractor)}}
             failed+=result.failedParts
             dropped+=result.dropped;pages+=result.pagesSent.size;cost+=result.cost;review+=result.review;legal+=if(result.legal)1 else 0
         }
         state=state.copy(status=tr("$added graph facts from ${pdfs.size} PDFs${if(legal>0)" ($legal read as court rulings)" else ""} · $pages pages sent to DeepSeek${if(dropped>0)" · $dropped dropped by the checks" else ""}${if(review>0)" · $review held back for review" else ""}${if(failed>0)" · $failed parts couldn't be read" else ""}${if(kept>0)" · $kept files keep their previous facts" else ""} · $"+"%.4f".format(java.util.Locale.US,cost),
             "$added datos del grafo de ${pdfs.size} PDF${if(legal>0)" ($legal leídos como fallos)" else ""} · $pages páginas enviadas a DeepSeek${if(dropped>0)" · $dropped descartados por las revisiones" else ""}${if(review>0)" · $review retenidos para revisión" else ""}${if(failed>0)" · $failed partes no se pudieron leer" else ""}${if(kept>0)" · $kept archivos conservan sus datos anteriores" else ""} · $"+"%.4f".format(java.util.Locale.US,cost)))
     }
-    /** A PDF's pages as text for fact extraction: the prose, then each rebuilt table row on its own line. */
-    private fun pageTexts(s:Source)=PDDocument.load(File(s.path)).use{doc->(1..doc.numberOfPages).map{p->val read=PdfText.page(doc,p)
-        DeepSeekFacts.PageText(p,(listOf(read.prose)+read.tables.flatten()).joinToString("\n").trim())}}
+    /**
+     * A PDF read for the graph. [pages] is what extraction reads: the DocLang blocks without running headers and
+     * footers, in reading order. [checkPages] also gives a paragraph split by a page break whole on the page where it
+     * starts, for checking facts. [doc] places facts on the page. A PDF the reader finds little text in keeps the old
+     * page reader (prose, then each rebuilt table row on its own line), and its facts have no place.
+     */
+    private class GraphText(val doc:DocLang.Doc?,val pages:List<DeepSeekFacts.PageText>,val checkPages:List<DeepSeekFacts.PageText>)
+    private fun graphText(s:Source):GraphText=PDDocument.load(File(s.path)).use{pdf->
+        val d=runCatching{DocLang.read(pdf)}.getOrNull()?.takeIf{DocPages.usable(it)}
+        if(d!=null)GraphText(d,DocPages.pages(d),DocPages.pages(d,joinThreads=true))
+        else (1..pdf.numberOfPages).map{p->val read=PdfText.page(pdf,p);DeepSeekFacts.PageText(p,(listOf(read.prose)+read.tables.flatten()).joinToString("\n").trim())}.let{GraphText(null,it,it)}
+    }
+    /** The text facts are checked against and their evidence is found in. */
+    private fun pageTexts(s:Source)=graphText(s).checkPages
     // ---- Review of held-back graph facts ----
     /**
      * [suggest]: for held-back page reasons, the page where the checks would pass. [evidence]: for kept AI facts, the
@@ -389,7 +404,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         return items.map{r->
             val suggested=checkers[r.sourceId]?.let{(checker,pages)->if ("page" !in r.reason && "página" !in r.reason) null else pages.firstOrNull{p->p!=r.fact.page&&checker.check(r.fact.copy(page=p))==com.proasiste.lite.runtime.LegalFacts.Verdict.KEPT}}
             val support=if(!evidence||r.edgeId==null||r.fact.extractor=="reglas")null else docs[r.sourceId]?.second?.firstOrNull{it.page==r.fact.page}?.let{com.proasiste.lite.runtime.LegalFacts.evidence(it.text,r.fact)?:""}
-            UiReviewItem(r.id,r.sourceId,titles[r.sourceId]?:r.sourceId,r.fact.page,r.fact.subjectType,r.fact.subject,r.fact.relation,r.fact.objectType,r.fact.obj,r.fact.statement,r.reason,suggested,r.edgeId,r.fact.extractor,support)
+            UiReviewItem(r.id,r.sourceId,titles[r.sourceId]?:r.sourceId,r.fact.page,r.fact.subjectType,r.fact.subject,r.fact.relation,r.fact.objectType,r.fact.obj,r.fact.statement,r.reason,suggested,r.edgeId,r.fact.extractor,support,r.fact.place)
         }
     }
     /** The document open in the viewer, whose pages carry a review status. */
@@ -470,7 +485,13 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         if(item.edgeId!=null)graph.rejectKept(state.buildingId,item.edgeId,reason=if(state.review?.sample==true)"muestra" else "página") else graph.rejectReview(item.id)
     }
     /** The item's document as the viewer shows it, open at the item's page. */
-    fun reviewPageItem(item:UiReviewItem):UiItem?=store.sources(state.buildingId).firstOrNull{it.id==item.sourceId}?.ui(null,item.statement,tr("Page ${item.page}","Página ${item.page}"))
+    /**
+     * The item's document as the viewer shows it, open at the item's page. It highlights the fact's stored place, or else
+     * the sentence that supports it, or else its own words. A place is dropped when the steward moved the fact to another page.
+     */
+    fun reviewPageItem(item:UiReviewItem):UiItem?=store.sources(state.buildingId).firstOrNull{it.id==item.sourceId}
+        ?.ui(null,item.evidence?.takeIf{it.isNotBlank()}?:item.statement,tr("Page ${item.page}","Página ${item.page}"))
+        ?.copy(highlight=item.place.takeIf{p->DocPages.parse(p).any{it.first==item.page}}.orEmpty())
     /** The key to use for the current project, or null when nothing may leave the phone. */
     /** The saved OpenRouter key for the current project, or null when nothing may leave the phone. */
     private fun cloudKey():String?=if(state.projects.firstOrNull{it.id==state.buildingId}?.incognito==true)null else jevVault.load()
@@ -494,7 +515,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         stopAnswer()
         val all=store.sources(state.buildingId).associateBy{it.id}
         val usable=facts.filter{it.sourceId in all}
-        val sources=usable.map{f->all.getValue(f.sourceId).ui(null,f.fact,tr("Page ${f.page} · graph fact","Página ${f.page} · dato del grafo"))}
+        val sources=usable.map{f->all.getValue(f.sourceId).ui(null,f.fact,tr("Page ${f.page} · graph fact","Página ${f.page} · dato del grafo")).copy(highlight=f.place)}
         state=state.copy(answer=UiAnswer(text=usable.withIndex().joinToString("\n"){(i,f)->"${f.fact} [${i+1}]"},sources=sources,working=false,fromGraph=true))
     }
     /** Runs after the search so the list is usable meanwhile: Jev reranks when allowed, Gemini Nano writes a short cited answer, then Jev checks its citations. */
