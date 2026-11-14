@@ -9,7 +9,7 @@ ProAsisteLocal (`com.plantroom.pocket`) loads every chunk to search, which break
 |---|---|---|
 | 1 | Getting thousands of files in | **Done** (`847aa52`, 2026-11-13) |
 | 2 | Choosing the model for answers | **Done** (2026-11-13) |
-| 3 | Sorting and tagging | Not started |
+| 3 | Sorting and tagging | **Done** (2026-11-13) |
 | 4 | DocLang reader, then graph tables the user guides | Not started |
 | 5 | Skills and actions on files, saved reports and decisions | Not started |
 
@@ -47,11 +47,28 @@ choosing a cloud model for a project is the consent, so searches don't ask each 
 sent. Checked on the Fold: DeepSeek V4.1 Flash answered a question on P90 with citations for $0.0001; with incognito on,
 Nano answered and nothing left the phone.
 
-## 3. Sorting and tagging
+## 3. Sorting and tagging — done
 
-- A tags table: several tags per file (type, year, court, case…).
-- Tags filled by rules (folder, file name), by the chosen model, or by hand.
-- Search and the Library filtered by tag, with counts per tag.
+- Schema 6: `tags`, `source_tags` (each file tag records who set it: by hand, by a rule, by AI), `tag_rules` and
+  `tag_queue`. A tag removed by hand is kept hidden, so rules and AI never put it back; a tag added by hand is never
+  replaced by them.
+- **Rules** (Library → Tags…), on the phone and instant: each subfolder's name; the year in the file name (a role's
+  "2154-11" → 2011, a date's, or a plain four-digit year, never a law number); "file name contains … → tag". They run
+  over the whole project when added and on every new import.
+- **AI**: the user describes tags ("penal: the case is about criminal law"); `CloudTagger` sends each indexed PDF's
+  first pages (up to 8,000 characters) and that list to the project's OpenRouter model, which may only choose from the
+  list. Runs in the background service after importing and indexing, with progress, Pause and cost in the summary. Off
+  in incognito projects; stops at once if OpenRouter refuses the key or the account has no credit.
+- **By hand**: a file's detail sheet shows its tags; tap one to remove it, or add one with the project's tags suggested.
+- The Library shows tag chips with counts; selected tags filter the Library and search results (a file must carry
+  every selected tag). Each file lists its tags.
+
+Checked on the Fold (P90, 16 files): three rules tagged 14 files at once (folders A/B/C, years, "STC" → sentencia);
+filtering by 2011 showed its two rulings; a tag removed by hand stayed removed after the rules ran again; AI tagging with
+DeepSeek V4.1 Flash tagged 15 PDFs for $0.0058, with "tributario" on the two tax-refund rulings.
+
+Not yet: AI tagging with Gemini Nano (Android may block it in the background; to be tested), AI-suggested new tags, and
+tags in the graph (step 4).
 
 ## 4. DocLang reader, then graph tables the user guides
 

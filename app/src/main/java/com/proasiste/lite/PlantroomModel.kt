@@ -36,6 +36,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     val store=engine.store
     val embedder=engine.embedder
     private val graph=com.proasiste.lite.graph.Graph(store)
+    private val tags=com.proasiste.lite.tags.Tags(store)
     private val deepSeek=com.proasiste.lite.runtime.DeepSeekFacts()
     private val worker=engine.worker
     private val modelFile=engine.modelFile
@@ -118,6 +119,54 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         }
     }
     private fun CloudAnswerer.Model.ui()=UiModel(id,name,inputPerMillion,outputPerMillion,context)
+
+    // ---- Tags ----
+    private fun tagWork(block:()->Unit){viewModelScope.launch{try{withContext(worker){block()}}catch(e:Exception){state=state.copy(error=e.message?.take(200))};refresh()}}
+    fun addTag(sourceId:String,name:String)=tagWork{tags.add(sourceId,state.buildingId,name)}
+    fun removeTag(sourceId:String,name:String)=tagWork{tags.remove(sourceId,state.buildingId,name)}
+    fun toggleTagFilter(name:String){val now=state.filters.tags;applyFilters(state.filters.copy(tags=if(name in now)now-name else now+name))}
+    /** Adds a rule and runs the project's rules over all its files at once, so the new tags show immediately. */
+    fun addTagRule(kind:String,pattern:String,tag:String){
+        val building=state.buildingId
+        viewModelScope.launch{
+            try{val n=withContext(worker){tags.addRule(building,kind,pattern,tag);tags.applyRules(building)}
+                state=state.copy(status=tr("Rule added · $n files have rule tags","Regla agregada · $n archivos tienen etiquetas de reglas"))}
+            catch(e:Exception){state=state.copy(error=e.message?.take(200))}
+            refresh()
+        }
+    }
+    /** Deletes a rule; the tags only it gave are taken off. */
+    fun deleteTagRule(id:Long){val building=state.buildingId;tagWork{tags.deleteRule(id);tags.applyRules(building)}}
+    fun applyTagRules(){
+        val building=state.buildingId
+        viewModelScope.launch{val n=withContext(worker){tags.applyRules(building)};state=state.copy(status=tr("Rules applied · $n files have rule tags","Reglas aplicadas · $n archivos tienen etiquetas de reglas"));refresh()}
+    }
+    fun defineTag(name:String,description:String){val building=state.buildingId;tagWork{tags.define(building,name,description)}}
+    /**
+     * Queues the project's indexed PDFs for AI tagging in the background service, with the project's OpenRouter model.
+     * Refuses up front when it couldn't run: incognito, no cloud model, no key, no described tags or nothing indexed.
+     */
+    fun tagWithAi(){
+        val project=state.projects.firstOrNull{it.id==state.buildingId}?:return
+        val problem=when{
+            project.incognito->tr("AI tagging is off in incognito projects. Nothing left this phone.","El etiquetado con IA está desactivado en proyectos incógnito. Nada salió de este teléfono.")
+            project.answerModel.isEmpty()->tr("Choose an OpenRouter model for this project first, in settings under Who writes answers. AI tagging uses that model.","Primero elige un modelo de OpenRouter para este proyecto, en ajustes, en Quién escribe las respuestas. El etiquetado con IA usa ese modelo.")
+            !state.jevKeySaved->tr("Save your OpenRouter key in settings first.","Primero guarda tu clave de OpenRouter en ajustes.")
+            state.aiTags.isEmpty()->tr("Describe at least one tag first, so AI knows what to look for.","Primero describe al menos una etiqueta, para que la IA sepa qué buscar.")
+            else->null
+        }
+        if(problem!=null){state=state.copy(error=problem);return}
+        val building=state.buildingId
+        viewModelScope.launch{
+            val n=withContext(worker){tags.queueForAi(building)}
+            if(n==0){state=state.copy(error=tr("Index this project's PDFs first.","Primero indexa los PDF de este proyecto."));return@launch}
+            IndexService.start(appContext,building)
+            val model=catalogModels.firstOrNull{it.id==project.answerModel}
+            // About 2,300 tokens in and 50 out per file.
+            val estimate=model?.let{" · "+tr("about","unos")+" $"+"%.2f".format(java.util.Locale.US,n*(2300*it.inputPerMillion+50*it.outputPerMillion)/1_000_000)}.orEmpty()
+            state=state.copy(status=tr("$n files queued for AI tagging with ${CloudAnswerer.displayName(project.answerModel,catalogModels)}$estimate · runs in the background","$n archivos en cola para etiquetar con IA con ${CloudAnswerer.displayName(project.answerModel,catalogModels)}$estimate · se ejecuta en segundo plano"))
+        }
+    }
     fun setSpanish(on:Boolean){L10n.spanish=on;prefs.edit().putBoolean("spanish",on).apply();state=state.copy(status="")}
     fun toggleIncognito(id:String){
         val projects=state.projects.map{if(it.id==id)it.copy(incognito=!it.incognito)else it};saveProjects(projects)
@@ -186,11 +235,15 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     fun resetFilters() { applyFilters(UiFilters()) }
     fun refresh(){
         val sources=store.sources(state.buildingId)
-        val candidates = if (state.isSearching) unfilteredSearchItems else sources.map{it.ui(excerpt=libraryNote(it))}
+        val bySource=tags.bySource(state.buildingId)
+        unfilteredSearchItems=unfilteredSearchItems.map{it.copy(tags=bySource[it.id].orEmpty())}
+        val candidates = if (state.isSearching) unfilteredSearchItems else sources.map{it.ui(excerpt=libraryNote(it)).copy(tags=bySource[it.id].orEmpty())}
         val docReview=graph.documentStatus(state.buildingId).mapValues{(_,s)->UiPageStatus(s.pending,s.facts,s.unchecked)}
         val pageReview=openDocumentId?.let{id->graph.pageStatus(id).mapValues{(_,s)->UiPageStatus(s.pending,s.facts,s.unchecked)}}?:emptyMap()
         state=state.copy(reviewCount=graph.reviewCount(state.buildingId),docReview=docReview,pageReview=pageReview,totalCount=sources.size,indexedCount=sources.count{it.indexed},photoCount=sources.count{it.type=="image"},audioCount=sources.count{it.type=="audio"},reportCount=sources.count{it.type=="pdf"},
             remainingCount=sources.count{!it.indexed&&!it.needsOcr},scanCount=sources.count{it.needsOcr},queuedCount=store.importCounts(state.buildingId).pending,
+            tagsBySource=bySource,tagCounts=tags.counts(state.buildingId).map{(n,c)->UiTagCount(n,c)},
+            tagRules=tags.rules(state.buildingId).map{UiTagRule(it.id,it.kind,it.pattern,it.tag)},aiTags=tags.definitions(state.buildingId).map{UiTagDef(it.name,it.description)},
             availableAssetIds=sources.map{it.asset}.distinct().sorted(),items=filterItems(candidates,state.buildingId,state.filters))
     }
     /** What the Library says under a file: why it isn't indexed, or which of its pages couldn't be read. */
@@ -219,7 +272,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     private fun verifyModel(file:File)=Engine.verifyModel(file)
     fun importPack(uri:Uri)=task(tr("Importing project pack", "Importando paquete de proyecto")){
         val known=projectIds();val current=state.buildingId
-        val count=withContext(worker){appContext.contentResolver.openInputStream(uri)!!.use{store.importPack(it,known,current)}}
+        val count=withContext(worker){appContext.contentResolver.openInputStream(uri)!!.use{store.importPack(it,known,current)}.also{tags.applyRules(current)}}
         state=state.copy(isSearching=false,query="",searchMillis=null,status=tr("$count sources imported · ready to index", "$count fuentes importadas · listas para indexar"))
     }
     /**
@@ -237,7 +290,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     }
     fun importFiles(uris:List<Uri>)=task(tr("Importing files", "Importando archivos")){
         val building=state.buildingId;var count=0;val errors=mutableListOf<String>()
-        withContext(worker){for(uri in uris.take(100)){try{importOne(uri,building);count++}catch(e:Exception){errors+=e.message?:tr("Unsupported file", "Archivo no compatible")}}}
+        withContext(worker){for(uri in uris.take(100)){try{importOne(uri,building);count++}catch(e:Exception){errors+=e.message?:tr("Unsupported file", "Archivo no compatible")}};tags.applyRules(building)}
         state=state.copy(query="",isSearching=false,searchMillis=null,status=tr("$count files imported", "$count archivos importados"),error=errors.takeIf{it.isNotEmpty()}?.joinToString("; ")?.take(300))
     }
     private fun importOne(uri:Uri,building:String){
@@ -551,7 +604,8 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         state=state.copy(query=tr("Photo search", "Búsqueda por foto"));showHits(hits,(System.nanoTime()-start)/1_000_000)
     }
     private fun showHits(hits:List<SearchHit>,ms:Long){
-        unfilteredSearchItems=hits.map{h->h.source.ui(h.score,sourceExcerpt(h.chunk.text,state.query),when(h.source.type){"pdf"->tr("Page ${h.chunk.page}", "Página ${h.chunk.page}");"audio"->"${h.chunk.startMs/60000}:${((h.chunk.startMs/1000)%60).toString().padStart(2,'0')}";else->tr("Original photo", "Foto original")})}
+        val bySource=tags.bySource(state.buildingId)
+        unfilteredSearchItems=hits.map{h->h.source.ui(h.score,sourceExcerpt(h.chunk.text,state.query),when(h.source.type){"pdf"->tr("Page ${h.chunk.page}", "Página ${h.chunk.page}");"audio"->"${h.chunk.startMs/60000}:${((h.chunk.startMs/1000)%60).toString().padStart(2,'0')}";else->tr("Original photo", "Foto original")}).copy(tags=bySource[h.source.id].orEmpty())}
         state=state.copy(isSearching=true,items=filterItems(unfilteredSearchItems,state.buildingId,state.filters),searchMillis=ms,status=if(hits.isEmpty())tr("No indexed files in this project", "No hay archivos indexados en este proyecto") else tr("Closest matches · inspect the original evidence", "Coincidencias más cercanas · revisa la evidencia original"))
     }
     // A literal window within the retrieved chunk, never a generated summary.
@@ -595,6 +649,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
             item.buildingId == building &&
                 (filters.assetId == null || item.assetId == filters.assetId) &&
                 (filters.kind == null || item.kind == filters.kind) &&
+                (filters.tags.isEmpty() || item.tags.containsAll(filters.tags)) &&
                 ((filters.dateFrom.isEmpty() && filters.dateTo.isEmpty()) ||
                     (validDate(item.date) != null && (filters.dateFrom.isEmpty() || item.date >= filters.dateFrom) &&
                         (filters.dateTo.isEmpty() || item.date <= filters.dateTo)))

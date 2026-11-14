@@ -11,6 +11,11 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import com.proasiste.lite.runtime.CloudAnswerer
+import com.proasiste.lite.runtime.CloudTagger
+import com.proasiste.lite.runtime.KeyVault
+import com.proasiste.lite.tags.TagJob
+import com.proasiste.lite.tags.Tags
 import com.proasiste.lite.ui.tr
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -30,13 +35,19 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the user asked to process are touched. Pause finishes the current file and stops.
  */
 class IndexService:Service(){
+    enum class Phase{IMPORT,INDEX,TAG}
     /**
-     * Where a run stands. Copying and indexing are counted apart, in files: [step] of [steps] in the current phase.
-     * [done] of [total] covers both, for the progress bar; totals are done plus still waiting, so they grow if a folder is added.
+     * Where a run stands. Copying, indexing and AI tagging are counted apart, in files: [step] of [steps] in the current
+     * phase. [done] of [total] covers all of them, for the progress bar; totals are done plus still waiting, so they grow if
+     * a folder is added.
      */
-    data class Progress(val done:Int,val total:Int,val title:String,val importing:Boolean,val pausing:Boolean=false,val step:Int=done+1,val steps:Int=total){
+    data class Progress(val done:Int,val total:Int,val title:String,val phase:Phase,val pausing:Boolean=false,val step:Int=done+1,val steps:Int=total){
         val fraction:Float get()=if(total<=0)0f else done.toFloat()/total
-        val label:String get()=if(importing)tr("Importing $step of $steps · $title","Importando $step de $steps · $title") else tr("Indexing $step of $steps · $title","Indexando $step de $steps · $title")
+        val label:String get()=when(phase){
+            Phase.IMPORT->tr("Importing $step of $steps · $title","Importando $step de $steps · $title")
+            Phase.INDEX->tr("Indexing $step of $steps · $title","Indexando $step de $steps · $title")
+            Phase.TAG->tr("Tagging with AI $step of $steps · $title","Etiquetando con IA $step de $steps · $title")
+        }
     }
 
     private val scope=CoroutineScope(SupervisorJob())
@@ -58,11 +69,12 @@ class IndexService:Service(){
 
     override fun onDestroy(){scope.cancel();thread.close();wakeLock?.takeIf{it.isHeld}?.release();super.onDestroy()}
 
-    private fun run(){
-        val engine=Engine.get(this);val store=engine.store
+    private suspend fun run(){
+        val engine=Engine.get(this);val store=engine.store;val tags=Tags(store)
         pausing.set(false)
         wakeLock=(getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"ProAsisteLite:index").apply{setReferenceCounted(false);acquire()}
         var imported=0;var duplicates=0;var importFailed=0;var indexed=0;var failed=0;var scans=0;var done=0
+        val ai=AiCount()
         var modelMissing=false
         try{
             val modelReady=try{engine.ensureModel()}catch(e:Exception){false}
@@ -70,23 +82,34 @@ class IndexService:Service(){
                 val projects=requested(this)
                 val q=store.nextImport(projects)
                 if(q!=null){
-                    publish(store,projects,done,q.name,importing=true,imported+duplicates+importFailed)
-                    try{val (status,note)=FolderImport.copyIn(this,store,q);store.finishImport(q.id,status,note);if(status==Store.IMPORTED)imported++ else duplicates++}
-                    catch(e:Exception){store.finishImport(q.id,Store.FAILED,e.message?:"");importFailed++}
+                    publish(store,tags,projects,done,q.name,Phase.IMPORT,imported+duplicates+importFailed)
+                    try{
+                        val (status,note)=FolderImport.copyIn(this,store,q)
+                        if(status==Store.IMPORTED){store.finishImport(q.id,status);tags.applyRules(q.building,listOf(note));imported++}
+                        else{store.finishImport(q.id,status,note);duplicates++}
+                    }catch(e:Exception){store.finishImport(q.id,Store.FAILED,e.message?:"");importFailed++}
                     done++;continue
                 }
-                val s=store.nextToIndex(projects)?:break
-                if(!modelReady){modelMissing=true;break}
-                publish(store,projects,done,s.title,importing=false,indexed+failed+scans)
-                try{val e=engine.encode(s);store.saveChunks(s,e.chunks,e.pages,e.noTextPages);indexed++}
-                catch(e:Engine.NeedsOcr){store.markNeedsOcr(s.id,e.pages,e.message?:"");scans++}
-                catch(e:Exception){store.error(s.id,e.message?:tr("Could not process source","No se pudo procesar la fuente"));failed++}
+                val s=store.nextToIndex(projects)
+                if(s!=null&&!modelReady)modelMissing=true
+                if(s!=null&&modelReady){
+                    publish(store,tags,projects,done,s.title,Phase.INDEX,indexed+failed+scans)
+                    try{val e=engine.encode(s);store.saveChunks(s,e.chunks,e.pages,e.noTextPages);indexed++}
+                    catch(e:Engine.NeedsOcr){store.markNeedsOcr(s.id,e.pages,e.message?:"");scans++}
+                    catch(e:Exception){store.error(s.id,e.message?:tr("Could not process source","No se pudo procesar la fuente"));failed++}
+                    done++;continue
+                }
+                // AI tagging comes last: it reads indexed files and doesn't need the search model.
+                val job=tags.nextForAi(projects)?:break
+                val title=store.sources(job.building).firstOrNull{it.id==job.sourceId}?.title?:job.sourceId
+                publish(store,tags,projects,done,title,Phase.TAG,ai.tagged+ai.failed)
+                tagWithAi(engine,tags,job,ai)
                 done++
             }
             val paused=pausing.get()
             // Finished (or nothing can go on without the model): forget the request, so the next launch doesn't restart it.
             if(!paused)prefs(this).edit().remove(PROJECTS).apply()
-            result.value=summary(paused,modelMissing,imported,duplicates,importFailed,indexed,failed,scans)
+            result.value=summary(paused,modelMissing,imported,duplicates,importFailed,indexed,failed,scans,ai)
         }finally{
             wakeLock?.takeIf{it.isHeld}?.release()
             progress.value=null
@@ -95,10 +118,50 @@ class IndexService:Service(){
         }
     }
 
-    /** [phaseDone] is how many files this run has finished in the current phase (copying or indexing). */
-    private fun publish(store:Store,projects:Set<String>,done:Int,title:String,importing:Boolean,phaseDone:Int){
+    /** What AI tagging did in this run. */
+    class AiCount{var tagged=0;var failed=0;var cost=0.0;var stopped=""}
+
+    /**
+     * Tags one file with the project's OpenRouter model, choosing only from the project's described tags. A project that
+     * is incognito, has no cloud model or no key, or whose key OpenRouter refuses, stops AI tagging and says why.
+     */
+    private suspend fun tagWithAi(engine:Engine,tags:Tags,job:TagJob,ai:AiCount){
+        val prefs=prefs(this)
+        val project=PlantroomModel.projectsFromJson(prefs.getString("projects","")?:"")?.firstOrNull{it.id==job.building}
+        val key=KeyVault(prefs).load()
+        val defs=tags.definitions(job.building)
+        val problem=when{
+            project==null->tr("project not found","no se encontró el proyecto")
+            project.incognito->tr("${job.building} is incognito, so nothing is sent","${job.building} es incógnito, así que no se envía nada")
+            project.answerModel.isEmpty()->tr("choose an OpenRouter model for ${job.building} first","primero elige un modelo de OpenRouter para ${job.building}")
+            key==null->tr("save your OpenRouter key first","primero guarda tu clave de OpenRouter")
+            defs.isEmpty()->tr("describe at least one tag first","primero describe al menos una etiqueta")
+            else->null
+        }
+        if(problem!=null){tags.cancelAi(job.building);ai.stopped=problem;return}
+        val source=engine.store.sources(job.building).firstOrNull{it.id==job.sourceId}
+        if(source==null){tags.finishAi(job.sourceId,Store.FAILED,"gone");return}
+        try{
+            val text=engine.firstPages(source)
+            val r=tagger.tag(key!!,project!!.answerModel,source.title,text,defs)
+            tags.replace(source.id,job.building,Tags.AI,r.tags)
+            tags.finishAi(source.id,Tags.DONE,r.tags.joinToString(", "))
+            ai.tagged++;ai.cost+=r.cost
+        }catch(e:kotlinx.coroutines.CancellationException){throw e}
+        catch(e:Exception){
+            tags.finishAi(source.id,Store.FAILED,e.message?:"");ai.failed++
+            // A refused key or an empty account fails every file the same way: stop instead of trying them all.
+            if((e as? CloudAnswerer.CloudException)?.code in setOf(401,402,403)){tags.cancelAi(job.building);ai.stopped=e.message?:""}
+        }
+    }
+    private val tagger=CloudTagger()
+
+    /** [phaseDone] is how many files this run has finished in the current phase. */
+    private fun publish(store:Store,tags:Tags,projects:Set<String>,done:Int,title:String,phase:Phase,phaseDone:Int){
         val (queued,unindexed)=store.pendingParts(projects)
-        val p=Progress(done,done+queued+unindexed,title,importing,pausing.get(),phaseDone+1,phaseDone+if(importing)queued else unindexed)
+        val aiWaiting=tags.pendingAi(projects)
+        val waiting=when(phase){Phase.IMPORT->queued;Phase.INDEX->unindexed;Phase.TAG->aiWaiting}
+        val p=Progress(done,done+queued+unindexed+aiWaiting,title,phase,pausing.get(),phaseDone+1,phaseDone+waiting)
         progress.value=p
         val now=System.currentTimeMillis()
         if(now-lastNotified>2000){lastNotified=now
@@ -146,7 +209,7 @@ class IndexService:Service(){
             pausing.set(true)
             progress.value=progress.value?.copy(pausing=true)
         }
-        fun summary(paused:Boolean,modelMissing:Boolean,imported:Int,duplicates:Int,importFailed:Int,indexed:Int,failed:Int,scans:Int):String{
+        fun summary(paused:Boolean,modelMissing:Boolean,imported:Int,duplicates:Int,importFailed:Int,indexed:Int,failed:Int,scans:Int,ai:AiCount=AiCount()):String{
             val parts=mutableListOf<String>()
             fun n(count:Int,en1:String,enN:String,es1:String,esN:String)=if(count==1)tr("1 $en1","1 $es1") else tr("$count $enN","$count $esN")
             if(imported>0)parts+=n(imported,"imported","imported","importado","importados")
@@ -155,6 +218,9 @@ class IndexService:Service(){
             if(indexed>0)parts+=n(indexed,"indexed","indexed","indexado","indexados")
             if(scans>0)parts+=n(scans,"scanned PDF needs OCR","scanned PDFs need OCR","PDF escaneado necesita OCR","PDF escaneados necesitan OCR")
             if(failed>0)parts+=n(failed,"failed; the Library shows why","failed; the Library shows why","falló; la Biblioteca muestra el motivo","fallaron; la Biblioteca muestra el motivo")
+            if(ai.tagged>0)parts+=n(ai.tagged,"tagged by AI","tagged by AI","etiquetado con IA","etiquetados con IA")+(if(ai.cost>0)" ($"+"%.4f".format(java.util.Locale.US,ai.cost)+")" else "")
+            if(ai.failed>0)parts+=n(ai.failed,"couldn't be tagged by AI","couldn't be tagged by AI","no se pudo etiquetar con IA","no se pudieron etiquetar con IA")
+            if(ai.stopped.isNotBlank())parts+=tr("AI tagging stopped: ${ai.stopped}","Etiquetado con IA detenido: ${ai.stopped}")
             val head=when{paused->tr("Paused · finished files are saved","Pausado · los archivos terminados quedan guardados");modelMissing->tr("Import the model to index","Importa el modelo para indexar");else->tr("Done","Listo")}
             return (listOf(head)+parts).joinToString(" · ")
         }

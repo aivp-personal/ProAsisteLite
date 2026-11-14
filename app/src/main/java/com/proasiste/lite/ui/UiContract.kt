@@ -27,8 +27,10 @@ data class UiFilters(
     val kind: UiKind? = null,
     val dateFrom: String = "",
     val dateTo: String = "",
+    /** A source must carry every one of these tags. */
+    val tags: Set<String> = emptySet(),
 ) {
-    val activeCount: Int get() = listOf(assetId != null, kind != null, dateFrom.isNotEmpty(), dateTo.isNotEmpty()).count { it }
+    val activeCount: Int get() = listOf(assetId != null, kind != null, dateFrom.isNotEmpty(), dateTo.isNotEmpty(), tags.isNotEmpty()).count { it }
     val metadataCount: Int get() = listOf(assetId != null, dateFrom.isNotEmpty(), dateTo.isNotEmpty()).count { it }
 }
 
@@ -44,7 +46,15 @@ data class UiItem(
     val sourceLocation: String = "",
     val synthetic: Boolean = true,
     val score: Float? = null,
+    val tags: List<String> = emptyList(),
 )
+
+/** A tag in use in the project and how many files carry it. */
+data class UiTagCount(val name: String, val count: Int)
+/** A tag rule: [kind] is "carpeta" (each subfolder name), "nombre" ([pattern] in the file name gives [tag]) or "año". */
+data class UiTagRule(val id: Long, val kind: String, val pattern: String = "", val tag: String = "")
+/** A tag AI may choose, with the description it reads to decide. */
+data class UiTagDef(val name: String, val description: String)
 
 enum class UiClaimProblem { CONTRADICTED, NOT_SUPPORTED, UNSURE }
 /** A contradicted sentence is removed from the answer, and [passages] show what its sources say instead. */
@@ -167,6 +177,13 @@ data class UiState(
     val jevKeyError: String? = null,
     /** OpenRouter's model list, loaded when the picker opens. */
     val catalog: UiCatalog = UiCatalog(),
+    /** Tags in use in this project, most used first. */
+    val tagCounts: List<UiTagCount> = emptyList(),
+    /** Each source's visible tags in this project, by source id. */
+    val tagsBySource: Map<String, List<String>> = emptyMap(),
+    val tagRules: List<UiTagRule> = emptyList(),
+    /** Tags AI may choose in this project. */
+    val aiTags: List<UiTagDef> = emptyList(),
 )
 
 data class UiActions(
@@ -191,6 +208,20 @@ data class UiActions(
     val onAnswerModel: (String) -> Unit = {},
     /** Loads OpenRouter's model list for the picker. */
     val onLoadModels: () -> Unit = {},
+    /** Adds a tag to a source by hand (source id, tag). */
+    val onAddTag: (String, String) -> Unit = { _, _ -> },
+    /** Removes a tag from a source by hand; rules and AI won't put it back. */
+    val onRemoveTag: (String, String) -> Unit = { _, _ -> },
+    /** Adds or removes a tag from the filter: shown sources must carry every selected tag. */
+    val onToggleTagFilter: (String) -> Unit = {},
+    /** Adds a rule (kind, words to look for, tag) and applies the project's rules. */
+    val onAddTagRule: (String, String, String) -> Unit = { _, _, _ -> },
+    val onDeleteTagRule: (Long) -> Unit = {},
+    val onApplyTagRules: () -> Unit = {},
+    /** Adds or changes a tag AI may choose (name, description); an empty description takes it off AI's list. */
+    val onDefineTag: (String, String) -> Unit = { _, _ -> },
+    /** Queues the project's indexed PDFs for AI tagging in the background. */
+    val onTagWithAi: () -> Unit = {},
     val onQuery: (String) -> Unit = {},
     val onSearch: () -> Unit = {},
     val onImportModel: () -> Unit = {},

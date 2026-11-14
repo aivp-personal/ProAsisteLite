@@ -8,6 +8,8 @@ Built on the Plantroom members starter app from The AI Automators. A native Andr
 - The database schema moves forward through numbered migrations.
 - A file already in a project is not imported twice.
 - Add evidence → Import a folder queues every PDF, photo and recording in a folder and its subfolders, then imports and indexes them in a background service with a notification and a Pause button. It keeps going with the screen off or the app closed, and resumes where it stopped. Each file's subfolder becomes its asset, so search can be filtered by folder.
+- Settings → Who writes answers chooses, per project, Gemini Nano on the phone or a model from OpenRouter's catalog; each answer says which model wrote it, what was sent and what it cost. Incognito projects always use Nano.
+- Library → Tags… tags files by rules (subfolder, year in the file name, words in the name), by AI choosing from tags you describe, or by hand. Tag chips with counts filter the Library and search.
 - A PDF with no text on any page is marked as a scan that needs OCR instead of failing; a PDF with some scanned pages is indexed, and the Library says how many pages couldn't be read.
 - `graph/Graph.kt` stores nodes and links per project. Types are plain text, so any schema fits, and every link names the source and page it came from. Multi-step questions run as recursive SQL queries with a step limit and loop protection. Deleting a file removes its links.
 - Add evidence offers two ways to fill the graph: Build graph with DeepSeek, or Import a graph file. A court ruling is detected and read in legal mode: two passes, fixed types and relations, and stricter checks that hold doubtful facts back. Up to 3 matching facts join the passages for an answer, cited as graph facts.

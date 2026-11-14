@@ -187,7 +187,7 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
     /** Remove a project's sources, their search index, graph and the app's private copies of their files. Returns the source count. */
     fun deleteProject(project:String):Int{
         val doomed=sources(project)
-        writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
+        writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("tag_rules","building=?",arrayOf(project));delete("tags","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
         indexChanged()
         doomed.forEach{deleteCopy(it.path)}
         return doomed.size
@@ -294,6 +294,16 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
                 "CREATE INDEX import_queue_status ON import_queue(status,building)",
                 "ALTER TABLE sources ADD COLUMN pages INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE sources ADD COLUMN no_text_pages INTEGER NOT NULL DEFAULT 0",
+            ),
+            // 6: tags. A file's tags each record who set them ("mano", "regla", "ia"); "quitada" marks a tag the user
+            // removed by hand, so a rule or an AI run never puts it back. Tags with a description are the list AI picks from.
+            listOf(
+                "CREATE TABLE tags(id INTEGER PRIMARY KEY,building TEXT NOT NULL,name TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',UNIQUE(building,name))",
+                "CREATE TABLE source_tags(source TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,origin TEXT NOT NULL,PRIMARY KEY(source,tag_id)) WITHOUT ROWID",
+                "CREATE INDEX source_tags_tag ON source_tags(tag_id,origin)",
+                "CREATE TABLE tag_rules(id INTEGER PRIMARY KEY,building TEXT NOT NULL,kind TEXT NOT NULL,pattern TEXT NOT NULL DEFAULT '',tag TEXT NOT NULL DEFAULT '')",
+                "CREATE TABLE tag_queue(source TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,building TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pendiente',note TEXT NOT NULL DEFAULT '')",
+                "CREATE INDEX tag_queue_status ON tag_queue(status,building)",
             ),
         )
         private val SOURCE_COLUMNS=arrayOf("id","path","type","building","asset","date","title","synthetic","indexed","error","pages","no_text_pages")

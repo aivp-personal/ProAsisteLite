@@ -62,6 +62,20 @@ class Engine private constructor(context:Context){
         }
     }
 
+    /** The text of a PDF's first pages, up to [maxChars], for AI tagging. Empty for photos and recordings. */
+    fun firstPages(s:Source,maxChars:Int=com.proasiste.lite.runtime.CloudTagger.MAX_CHARS):String{
+        if(s.type!="pdf")return ""
+        val out=StringBuilder()
+        PDDocument.load(File(s.path)).use{doc->
+            for(page in 1..doc.numberOfPages){
+                if(out.length>=maxChars)break
+                val read=PdfText.page(doc,page)
+                out.append("=== PAGE $page ===\n").append((listOf(read.prose)+read.tables.flatten()).joinToString("\n").trim()).append("\n\n")
+            }
+        }
+        return out.take(maxChars).toString()
+    }
+
     companion object {
         @Volatile private var instance:Engine?=null
         fun get(context:Context):Engine=instance?:synchronized(this){instance?:Engine(context.applicationContext).also{instance=it}}

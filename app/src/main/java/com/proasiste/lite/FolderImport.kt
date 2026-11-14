@@ -52,8 +52,8 @@ object FolderImport {
     }
 
     /**
-     * Copies [q] into the library as a new source of its project. Returns [Store.IMPORTED], or [Store.DUPLICATE] with the
-     * title already holding the same contents. The subfolder becomes the source's asset, so search can be filtered by it,
+     * Copies [q] into the library as a new source of its project. Returns [Store.IMPORTED] with the new source's id, or
+     * [Store.DUPLICATE] with the title already holding the same contents. The subfolder becomes the source's asset, so search can be filtered by it,
      * and the file's own date (last modified) becomes the source's date.
      */
     fun copyIn(context:Context,store:Store,q:QueuedFile):Pair<String,String>{
@@ -67,7 +67,7 @@ object FolderImport {
             store.duplicateOf(hash,q.building)?.let{f.delete();return Store.DUPLICATE to it.title}
             val date=if(q.modified>0)Instant.ofEpochMilli(q.modified).atZone(ZoneId.systemDefault()).toLocalDate() else LocalDate.now()
             store.add(Source(id,f.path,type,q.building,q.folder.take(80),date.toString(),q.name,false),hash)
-            return Store.IMPORTED to ""
+            return Store.IMPORTED to id
         }catch(e:Exception){f.delete();throw e}
     }
 }

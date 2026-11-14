@@ -72,7 +72,7 @@ import java.util.Locale
 
 internal val Ink = Color(0xFF0A0A0A)
 internal val Steel = Color(0xFF161616)
-private val Raised = Color(0xFF232323)
+internal val Raised = Color(0xFF232323)
 internal val Line = Color(0xFF2F2F2F)
 internal val Mist = Color(0xFFF5F5F5)
 internal val Muted = Color(0xFF9B9B9B)
@@ -116,6 +116,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         var deleteProject by rememberSaveable { mutableStateOf<String?>(null) }
         var filterSheet by rememberSaveable { mutableStateOf(false) }
         var inspector by remember { mutableStateOf<UiItem?>(null) }
+        var tagsSheet by remember { mutableStateOf(false) }
         var deleteSource by remember { mutableStateOf<UiItem?>(null) }
         var library by rememberSaveable { mutableStateOf(false) }
         val listState = rememberLazyListState()
@@ -344,6 +345,22 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                                 border = FilterChipDefaults.filterChipBorder(enabled = true, selected = filter == key, borderColor = Line, selectedBorderColor = Raised))
                         }
                     }
+                    // Tags: the manage button first, then each tag in use with its count. Selected tags must all be on a file.
+                    Row(Modifier.horizontalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 2.dp).testTag("plantroom.tag-chips"), horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        AssistChip(onClick = { tagsSheet = true }, enabled = !locked, label = { Text(tr("Tags…", "Etiquetas…"), fontSize = 12.sp, color = Gold) },
+                            shape = RoundedCornerShape(9.dp), border = AssistChipDefaults.assistChipBorder(enabled = true, borderColor = Line), modifier = Modifier.testTag("plantroom.manage-tags"))
+                        state.tagCounts.forEach { t ->
+                            val on = t.name in state.filters.tags
+                            FilterChip(selected = on, onClick = { actions.onToggleTagFilter(t.name) }, enabled = !locked,
+                                label = { Text("${t.name} · ${t.count}", fontSize = 12.sp) }, modifier = Modifier.testTag("plantroom.tag.${t.name}"),
+                                shape = RoundedCornerShape(9.dp), colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Raised, selectedLabelColor = Gold),
+                                border = FilterChipDefaults.filterChipBorder(enabled = true, selected = on, borderColor = Line, selectedBorderColor = Raised))
+                        }
+                    }
+                    if (state.filters.tags.isNotEmpty()) Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(tr("With every tag: ", "Con todas las etiquetas: ") + state.filters.tags.sorted().joinToString(" · "), color = Gold, fontSize = 11.sp, modifier = Modifier.weight(1f), lineHeight = 17.sp)
+                        TextButton(onClick = { state.filters.tags.forEach(actions.onToggleTagFilter) }, enabled = !locked, contentPadding = PaddingValues(horizontal = 5.dp)) { Text(tr("Clear", "Borrar"), fontSize = 11.sp) }
+                    }
                     if (state.filters.metadataCount > 0) Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(listOfNotNull(state.filters.assetId?.let { if (it.isBlank()) tr("Untagged", "Sin etiqueta") else it },
                             state.filters.dateFrom.takeIf { it.isNotEmpty() }?.let { tr("From $it", "Desde $it") },
@@ -381,6 +398,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         }
 
         if (filterSheet) FilterSheet(state, actions, onClose = { filterSheet = false })
+        if (tagsSheet) TagsSheet(state, actions, onClose = { tagsSheet = false })
 
         if (buildings) ModalBottomSheet(onDismissRequest = { buildings = false }, containerColor = Steel) {
             SheetHeader(tr("Projects", "Proyectos"), tr("Choose the project you're working in.", "Elige el proyecto en el que trabajas."))
@@ -533,6 +551,9 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                         } else Button(onClick = { actions.onOpenSource(item) }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp)) {
                             Text(if (item.kind == UiKind.REPORT) tr("Open original report", "Abrir informe original") else tr("Open original photo", "Abrir foto original")); Spacer(Modifier.width(9.dp)); Glyph("arrow", Ink, Modifier.size(18.dp))
                         }
+                        Spacer(Modifier.height(22.dp))
+                        SourceTags(state.tagsBySource[item.id].orEmpty(), state.tagCounts.map { it.name }, enabled = !locked,
+                            onAdd = { actions.onAddTag(item.id, it) }, onRemove = { actions.onRemoveTag(item.id, it) })
                         if (item.synthetic) {
                             Spacer(Modifier.height(18.dp))
                             Text(tr("FICTIONAL DEMO SOURCE", "FUENTE FICTICIA DE DEMOSTRACIÓN"), fontFamily = OpenSauce, color = Muted, fontSize = 10.sp, letterSpacing = 1.sp)
@@ -878,6 +899,7 @@ private fun EvidenceRow(item: UiItem, searching: Boolean, onClick: () -> Unit, r
 private fun SourceMeta(item: UiItem) {
     val text = listOf(item.date, item.assetId.takeIf { item.kind != UiKind.PHOTO }.orEmpty(), item.sourceLocation).filter { it.isNotBlank() }.joinToString("  ·  ")
     if (text.isNotBlank()) Text(text, Modifier.padding(top = 5.dp), color = Muted, fontSize = 11.sp, maxLines = 2, lineHeight = 16.sp, overflow = TextOverflow.Ellipsis)
+    if (item.tags.isNotEmpty()) Text(item.tags.joinToString("  ·  ") { "#$it" }, Modifier.padding(top = 4.dp), color = Gold, fontSize = 11.sp, maxLines = 2, lineHeight = 16.sp, overflow = TextOverflow.Ellipsis)
 }
 
 @Composable
@@ -916,7 +938,7 @@ private fun LocalPhoto(path: String, description: String, modifier: Modifier = M
 }
 
 @Composable
-private fun SheetHeader(title: String, subtitle: String) {
+internal fun SheetHeader(title: String, subtitle: String) {
     Column(Modifier.padding(start = 24.dp, end = 24.dp, top = 6.dp, bottom = 14.dp)) {
         Text(title, fontSize = 27.sp, fontWeight = FontWeight.Medium, letterSpacing = (-.7).sp)
         Spacer(Modifier.height(7.dp)); Text(subtitle, color = Muted, fontSize = 13.sp, lineHeight = 20.sp, fontFamily = NotoSerif)
@@ -938,7 +960,7 @@ private fun Count(label: String, count: Int, modifier: Modifier) {
 }
 
 @Composable
-private fun Eyebrow(text: String, color: Color = Muted) {
+internal fun Eyebrow(text: String, color: Color = Muted) {
     Text(text.uppercase(), color = color, fontSize = 10.sp, fontFamily = OpenSauce, fontWeight = FontWeight.Medium, letterSpacing = 1.6.sp)
 }
 

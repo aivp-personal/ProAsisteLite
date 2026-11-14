@@ -70,6 +70,9 @@ class MainActivity:ComponentActivity(){
                 onShareAnswer=model::shareAnswer,onDismissShare=model::dismissShare,
                 onSaveJevKey=model::saveJevKey,onRemoveJevKey=model::removeJevKey,onJevEnabled=model::setJevEnabled,
                 onAnswerModel=model::setAnswerModel,onLoadModels=model::loadModels,
+                onAddTag=model::addTag,onRemoveTag=model::removeTag,onToggleTagFilter=model::toggleTagFilter,
+                onAddTagRule=model::addTagRule,onDeleteTagRule=model::deleteTagRule,onApplyTagRules=model::applyTagRules,
+                onDefineTag=model::defineTag,onTagWithAi=model::tagWithAi,
                 
                 onConfirmShare={text->model.dismissShare();startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,text),tr("Share answer", "Compartir respuesta")))},onQuery=model::setQuery,onSearch=model::search,
                 onImportModel={modelPicker.launch(arrayOf("*/*"))},onImportCorpus={packPicker.launch(arrayOf("application/zip","application/octet-stream"))},
