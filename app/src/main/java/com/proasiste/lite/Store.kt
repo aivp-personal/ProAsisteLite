@@ -12,6 +12,7 @@ import java.io.File
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.roundToInt
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -207,14 +208,22 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
      * word counts come from the terms table. Text is read only for the chunks that are returned.
      */
     @Synchronized
-    fun search(query:FloatArray,building:String,limit:Int=40,queryText:String?=null,passages:Int=PASSAGES):SearchResult{
+    fun search(query:FloatArray,building:String,limit:Int=40,queryText:String?=null,passages:Int=PASSAGES,only:Set<String>?=null):SearchResult{
         val index=indexFor(building);val n=index.size
         if(n==0||query.size!=DIMENSIONS)return SearchResult(emptyList(),emptyList())
-        val similarity=index.similarities(query)
+        // Scoped to [only] (the ruling a question names by its number): ranking happens inside those files alone, every
+        // chunk of them scored exactly, so another ruling that merely shares the words can't push it out.
+        val allowed=only?.takeIf{it.isNotEmpty()}?.let{ids->BooleanArray(n).also{mask->
+            readableDatabase.rawQuery("SELECT id FROM chunks WHERE source IN (${ids.joinToString(","){"?"}})",ids.toTypedArray()).use{c->while(c.moveToNext()){val p=index.positionOf(c.getLong(0));if(p>=0)mask[p]=true}}}}
+        val similarity=if(allowed==null)index.similarities(query){ids->wholeVectors(ids)} else{
+            val positions=(0 until n).filter{allowed[it]};val whole=wholeVectors(LongArray(positions.size){index.chunkIds[positions[it]]})
+            var qn=0f;for(x in query)qn+=x*x;val qs=1/kotlin.math.sqrt(qn)
+            FloatArray(n){Float.NaN}.also{s->for(p in positions){val v=whole[index.chunkIds[p]]?:continue;var dot=0f;var vn=0f;for(j in 0 until DIMENSIONS){dot+=query[j]*v[j];vn+=v[j]*v[j]};if(vn>0)s[p]=dot*qs/kotlin.math.sqrt(vn)}}
+        }
         val fused=DoubleArray(n)
         (0 until n).filter{similarity[it].isFinite()}.sortedByDescending{similarity[it]}.forEachIndexed{rank,i->fused[i]+=1.0/(RRF_K+rank)}
         val words=queryText?.let{terms(it).toSet()}.orEmpty()
-        if(words.isNotEmpty()){val bm25=wordScores(index,words);(0 until n).filter{bm25[it]>0}.sortedByDescending{bm25[it]}.forEachIndexed{rank,i->fused[i]+=1.0/(RRF_K+rank)}}
+        if(words.isNotEmpty()){val bm25=wordScores(index,words);(0 until n).filter{bm25[it]>0&&(allowed==null||allowed[it])}.sortedByDescending{bm25[it]}.forEachIndexed{rank,i->fused[i]+=1.0/(RRF_K+rank)}}
         val ranked=(0 until n).filter{fused[it]>0}.sortedByDescending{fused[it]}
         val perSource=ranked.distinctBy{index.sourceOf[it]}.take(limit)
         val best=ranked.filter{index.hasText[it]}.take(passages)
@@ -242,11 +251,29 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
         }
         return out
     }
+    /**
+     * The files of [building] that are the ruling numbered [number] ("17292"): by the number in their title ("STC Rol
+     * 17.292-26", "STC_Rol_N__17_292-26_INA.pdf", "17292.pdf"), or by being where the rulings table read that ruling.
+     */
+    fun sourcesNumbered(building:String,number:String):Set<String>{
+        val out=sources(building).filter{s->titleNumbers(s.title).contains(number)}.map{it.id}.toMutableSet()
+        readableDatabase.rawQuery("SELECT DISTINCT v.source,n.name FROM graph_values v JOIN graph_nodes n ON n.id=v.node_id WHERE n.building=? AND n.type='Fallo'",arrayOf(building)).use{d->
+            while(d.moveToNext())if(com.proasiste.lite.graph.SameName.caseNumber(d.getString(1))==number)out+=d.getString(0)}
+        return out
+    }
+    /** The whole stored vectors of [ids], read in batches: what a large project's compact index rescores exactly. */
+    private fun wholeVectors(ids:LongArray):Map<Long,FloatArray>{
+        val out=HashMap<Long,FloatArray>()
+        for(batch in ids.toList().chunked(500))readableDatabase.rawQuery("SELECT id,vector FROM chunks WHERE id IN (${batch.joinToString(","){"?"}})",batch.map{it.toString()}.toTypedArray()).use{c->
+            while(c.moveToNext()){val b=ByteBuffer.wrap(c.getBlob(1)).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer();if(b.remaining()==DIMENSIONS)out[c.getLong(0)]=FloatArray(DIMENSIONS).also{b.get(it)}}
+        }
+        return out
+    }
     private fun indexFor(building:String):ProjectIndex{
         val now=generation.get()
         cached?.takeIf{it.building==building&&it.generation==now}?.let{return it}
         cached=null // Free the old arrays before loading new ones: two at once might not fit.
-        return ProjectIndex.load(readableDatabase,building,now).also{cached=it}
+        return ProjectIndex.load(readableDatabase,building,now,File(context.filesDir,"index-$building.bin")).also{cached=it}
     }
 
     /** Remove a project's sources, their search index, graph and the app's private copies of their files. Returns the source count. */
@@ -255,6 +282,7 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
         writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("graph_schemas","building=?",arrayOf(project));delete("decisions","building=?",arrayOf(project));delete("reports","building=?",arrayOf(project));delete("action_runs","building=?",arrayOf(project));delete("tag_rules","building=?",arrayOf(project));delete("tags","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_aliases","building=?",arrayOf(project));delete("history","building=?",arrayOf(project));delete("memories","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
         indexChanged()
         doomed.forEach{deleteCopy(it.path)}
+        File(context.filesDir,"index-$project.bin").delete()
         return doomed.size
     }
     /** Remove one source, its index and graph links, and the app's private copy of its file. Returns false if it didn't exist. */
@@ -440,7 +468,15 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
         private val STOP=setOf("the","and","for","are","how","what","when","where","which","who","why","does","do","did","can","you","your","with","this","that","from","into","about","have","has","was","were","will","should","there","they","them","a","an","of","to","in","on","is","it","be","or","as","at","by","if","i","my","me",
             "el","la","los","las","un","una","unos","unas","de","del","que","y","en","por","para","con","como","cual","cuando","donde","es","son","se","su","sus","al","lo","le","les","mi","yo","no","si","o")
         /** Lower-cased, accent-folded words with plural "s" trimmed, minus stop words; shared by queries and chunks. */
-        fun terms(text:String):List<String> = Regex("[\\p{L}\\p{N}]+").findAll(java.text.Normalizer.normalize(text.lowercase(),java.text.Normalizer.Form.NFD).replace(Regex("\\p{M}+"),""))
+        // Compiled once: each compiled pattern holds native memory until it is collected, and a search over a large
+        // project builds thousands of excerpts in a row (2,764 for Dr. García's rulings ran the app out of native memory).
+        /** The case numbers in a file's title: "17.292", "17_292" and "17 292" give 17292, as does a bare "17292". */
+        fun titleNumbers(title:String):Set<String> = (SPLIT_NUMBER.findAll(title).map{it.groupValues[1]+it.groupValues[2]}+PLAIN_NUMBER.findAll(title).map{it.value}).toSet()
+        private val SPLIT_NUMBER=Regex("(?<!\\d)(\\d{1,3})[._ ](\\d{3})(?!\\d)")
+        private val PLAIN_NUMBER=Regex("(?<!\\d)\\d{3,6}(?!\\d)")
+        private val WORD=Regex("[\\p{L}\\p{N}]+")
+        private val MARKS=Regex("\\p{M}+")
+        fun terms(text:String):List<String> = WORD.findAll(java.text.Normalizer.normalize(text.lowercase(),java.text.Normalizer.Form.NFD).replace(MARKS,""))
             .map{it.value}.filter{it !in STOP&&(it.length>1||it[0].isDigit())}.map{if(it.length>4&&it.endsWith("s"))it.dropLast(1) else it}.toList()
         /** The original app's building IDs and the sample projects they became. */
         val LEGACY_BUILDINGS=mapOf("MC01" to "P01","CH02" to "P02")
@@ -453,21 +489,86 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
  * One project's chunks in flat arrays: ids sorted for lookup, the source each belongs to, word counts and
  * unit-length vectors, so a dot product is the cosine. Nothing else is held between searches.
  */
-private class ProjectIndex(val building:String,val generation:Long,val chunkIds:LongArray,val sourceOf:IntArray,val wordCounts:IntArray,val hasText:BooleanArray,val vectors:FloatArray){
+/**
+ * A project's search index in memory. Up to [FULL_LIMIT] chunks it holds every vector whole ([vectors]) and every
+ * similarity is exact. A larger project (tens of thousands of pages) wouldn't fit in the app's memory that way, so it
+ * holds a compact copy instead ([compact]): the first [compactDims] of each vector's 768 numbers, renormalised and kept
+ * as one signed byte each. EmbeddingGemma 2 is trained so that its leading 128 or 256 numbers still describe the text
+ * (Matryoshka). Every chunk is ranked on the compact copy; the best [RESCORE] are then scored exactly with their whole
+ * vectors, read from the database by [exact]. The others get no vector similarity, so only keywords can still bring
+ * them in.
+ */
+private class ProjectIndex(val building:String,val generation:Long,val chunkIds:LongArray,val sourceOf:IntArray,val wordCounts:IntArray,val hasText:BooleanArray,
+                           val vectors:FloatArray?,val compact:ByteArray?=null,val compactDims:Int=0){
     val size get()=chunkIds.size
     val averageWords=if(size==0)1.0 else maxOf(1.0,wordCounts.average())
     fun positionOf(chunkId:Long)=chunkIds.binarySearch(chunkId)
-    fun similarities(query:FloatArray):FloatArray{
+    fun similarities(query:FloatArray,exact:(LongArray)->Map<Long,FloatArray> = {emptyMap()}):FloatArray{
         var norm=0.0;for(x in query)norm+=x*x
         if(norm<=0||!norm.isFinite())return FloatArray(size){Float.NaN}
         val scale=(1/kotlin.math.sqrt(norm)).toFloat();val d=Store.DIMENSIONS
-        return FloatArray(size){p->val start=p*d;var dot=0f;for(j in 0 until d)dot+=query[j]*vectors[start+j];dot*scale}
+        if(vectors!=null)return FloatArray(size){p->val start=p*d;var dot=0f;for(j in 0 until d)dot+=query[j]*vectors[start+j];dot*scale}
+        val c=compact!!;val k=compactDims
+        var qn=0.0;for(j in 0 until k)qn+=query[j]*query[j]
+        if(qn<=0)return FloatArray(size){Float.NaN}
+        val qs=(1/kotlin.math.sqrt(qn)).toFloat();val q=FloatArray(k){query[it]*qs}
+        val rough=FloatArray(size){p->val start=p*k;var dot=0f;for(j in 0 until k)dot+=q[j]*c[start+j];dot}
+        // The best few hundred on the compact copy, scored exactly.
+        val cut=if(size<=RESCORE)Float.NEGATIVE_INFINITY else rough.copyOf().also{it.sort()}[size-RESCORE]
+        val best=(0 until size).filter{rough[it]>=cut}.sortedByDescending{rough[it]}.take(RESCORE)
+        val whole=exact(LongArray(best.size){chunkIds[best[it]]})
+        val out=FloatArray(size){Float.NaN}
+        for(p in best){val v=whole[chunkIds[p]]?:continue;var dot=0f;var vn=0f;for(j in 0 until d){dot+=query[j]*v[j];vn+=v[j]*v[j]};if(vn>0)out[p]=dot*scale/kotlin.math.sqrt(vn)}
+        return out
     }
     companion object {
         private const val BATCH=500
-        fun load(db:SQLiteDatabase,building:String,generation:Long):ProjectIndex{
-            val count=db.rawQuery("SELECT COUNT(*) FROM chunks c JOIN sources s ON s.id=c.source WHERE s.building=?",arrayOf(building)).use{it.moveToFirst();it.getInt(0)}
-            val d=Store.DIMENSIONS;val ids=LongArray(count);val sources=IntArray(count);val words=IntArray(count);val text=BooleanArray(count);val vectors=FloatArray(count*d)
+        /** Above this many chunks (about 150 MB of whole vectors) the index keeps the compact copy instead. */
+        const val FULL_LIMIT=50_000
+        /** How many chunks the compact copy hands on to be scored exactly. */
+        const val RESCORE=400
+        /**
+         * A large project's compact index is saved to [saved] once built, and read back while the project's chunks are the
+         * same (same count, same ids, same index version): building it reads every vector (1.87 GB for 607,378 chunks,
+         * two and a half minutes on the Fold), reading it back reads under 100 MB.
+         */
+        fun load(db:SQLiteDatabase,building:String,generation:Long,saved:File?=null):ProjectIndex{
+            val (count,maxId,sumId)=db.rawQuery("SELECT COUNT(*),COALESCE(MAX(c.id),0),COALESCE(SUM(c.id),0) FROM chunks c JOIN sources s ON s.id=c.source WHERE s.building=?",arrayOf(building))
+                .use{it.moveToFirst();Triple(it.getInt(0),it.getLong(1),it.getLong(2))}
+            val signature="${com.proasiste.lite.runtime.GemmaEmbedder.INDEX_VERSION}|$count|$maxId|$sumId"
+            if(count>FULL_LIMIT&&saved!=null){
+                runCatching{readSaved(saved,building,generation,signature)}.getOrNull()?.let{return it}
+                return build(db,building,generation,count).also{i->runCatching{save(i,saved,signature)}.onFailure{saved.delete()}}
+            }
+            saved?.delete()
+            return build(db,building,generation,count)
+        }
+        private fun save(i:ProjectIndex,f:File,signature:String){
+            val tmp=File(f.path+".part")
+            java.io.DataOutputStream(java.io.BufferedOutputStream(tmp.outputStream(),1 shl 20)).use{o->
+                o.writeUTF(signature);o.writeInt(i.size);o.writeInt(i.compactDims)
+                for(x in i.chunkIds)o.writeLong(x);for(x in i.sourceOf)o.writeInt(x);for(x in i.wordCounts)o.writeInt(x)
+                for(x in i.hasText)o.writeBoolean(x);o.write(i.compact!!)
+            }
+            check(tmp.renameTo(f)||(f.delete()&&tmp.renameTo(f)))
+        }
+        private fun readSaved(f:File,building:String,generation:Long,signature:String):ProjectIndex?{
+            if(!f.isFile)return null
+            java.io.DataInputStream(java.io.BufferedInputStream(f.inputStream(),1 shl 20)).use{i->
+                if(i.readUTF()!=signature)return null
+                val n=i.readInt();val k=i.readInt()
+                val ids=LongArray(n){i.readLong()};val sources=IntArray(n){i.readInt()};val words=IntArray(n){i.readInt()};val text=BooleanArray(n){i.readBoolean()}
+                val compact=ByteArray(n*k).also{i.readFully(it)}
+                return ProjectIndex(building,generation,ids,sources,words,text,null,compact,k)
+            }
+        }
+        private fun build(db:SQLiteDatabase,building:String,generation:Long,count:Int):ProjectIndex{
+            val d=Store.DIMENSIONS;val ids=LongArray(count);val sources=IntArray(count);val words=IntArray(count);val text=BooleanArray(count)
+            val full=count<=FULL_LIMIT
+            // 256 numbers a chunk while that stays under about 60 MB; 128 beyond.
+            val k=if(count*256L<=60_000_000L)256 else 128
+            val vectors=if(full)FloatArray(count*d) else null;val compact=if(full)null else ByteArray(count*k)
+            val row=FloatArray(d)
             val sourceNumbers=HashMap<String,Int>();var filled=0;var lastId=0L
             while(true){
                 // Fetched in batches by id: each query starts where the last ended instead of skipping from the top.
@@ -478,17 +579,23 @@ private class ProjectIndex(val building:String,val generation:Long,val chunkIds:
                         check(filled<count){"The search index changed while loading."}
                         val buffer=ByteBuffer.wrap(c.getBlob(4)).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
                         if(buffer.remaining()!=d)continue
-                        buffer.get(vectors,filled*d,d)
-                        var norm=0.0;for(j in 0 until d){val x=vectors[filled*d+j];norm+=x*x}
+                        buffer.get(row,0,d)
+                        var norm=0.0;for(j in 0 until d){val x=row[j];norm+=x*x}
                         if(norm<=0||!norm.isFinite())continue // Unusable vector: leave it out, as the old search skipped it.
-                        val scale=(1/kotlin.math.sqrt(norm)).toFloat();for(j in 0 until d)vectors[filled*d+j]*=scale
+                        if(vectors!=null){val scale=(1/kotlin.math.sqrt(norm)).toFloat();for(j in 0 until d)vectors[filled*d+j]=row[j]*scale}
+                        else{
+                            var kn=0.0;for(j in 0 until k)kn+=row[j]*row[j]
+                            if(kn<=0)continue
+                            val ks=(127/kotlin.math.sqrt(kn)).toFloat()
+                            for(j in 0 until k)compact!![filled*k+j]=(row[j]*ks).roundToInt().coerceIn(-127,127).toByte()
+                        }
                         ids[filled]=lastId;sources[filled]=sourceNumbers.getOrPut(c.getString(1)){sourceNumbers.size};words[filled]=c.getInt(2);text[filled]=c.getInt(3)==1;filled++
                     }
                 }
                 if(read<BATCH)break
             }
-            return if(filled==count)ProjectIndex(building,generation,ids,sources,words,text,vectors)
-            else ProjectIndex(building,generation,ids.copyOf(filled),sources.copyOf(filled),words.copyOf(filled),text.copyOf(filled),vectors.copyOf(filled*d))
+            return if(filled==count)ProjectIndex(building,generation,ids,sources,words,text,vectors,compact,k)
+            else ProjectIndex(building,generation,ids.copyOf(filled),sources.copyOf(filled),words.copyOf(filled),text.copyOf(filled),vectors?.copyOf(filled*d),compact?.copyOf(filled*k),k)
         }
     }
 }

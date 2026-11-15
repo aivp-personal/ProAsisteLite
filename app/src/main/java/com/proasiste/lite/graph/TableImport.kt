@@ -151,9 +151,11 @@ object SameName {
         return known.filter { same(name, it) }.distinctBy(Graph::keyOf).singleOrNull()
     }
 
+    private val CASE_WORD = Regex("(?i)\\b(?:rol|stc|sentencia|fallo|causa)\\b")
+
     /** The main number of a case name: "STC Rol 17.292", "Rol N° 17.292-26" and "17292-2026" all give 17292. */
     fun caseNumber(name: String): String? = Regex("(?i)(?:rol\\s*(?:n[°º.]?\\s*)?)?\\b(\\d{1,3}(?:\\.\\d{3})+|\\d{3,6})(?:\\s*-\\s*\\d{2,4})?\\b").find(name)
-        ?.takeIf { Regex("(?i)\\brol\\b").containsMatchIn(name) || Regex("^\\s*\\d").containsMatchIn(name) }?.groupValues?.get(1)?.replace(".", "")
+        ?.takeIf { CASE_WORD.containsMatchIn(name) || Regex("^\\s*\\d").containsMatchIn(name) }?.groupValues?.get(1)?.replace(".", "")
 
     /**
      * Pairs of names in the graph that are probably one thing: the same person spelled two ways ([same]), or the same case

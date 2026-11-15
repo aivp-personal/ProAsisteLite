@@ -607,7 +607,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         if(state.busy||state.recording)return
         viewModelScope.launch{
             state=state.copy(busy=true,status=label,error=null)
-            try{block()}catch(e:Exception){state=state.copy(error=e.message?.take(300)?:tr("Operation failed", "La operación falló"),status=tr("Needs attention", "Requiere atención"))}
+            try{block()}catch(e:Exception){android.util.Log.e("ProAsiste","$label failed",e);state=state.copy(error=e.message?.take(300)?:tr("Operation failed", "La operación falló"),status=tr("Needs attention", "Requiere atención"))}
             finally{state=state.copy(busy=false,progress=null,modelReady=embedder.isLoaded);refresh()}
         }
     }
@@ -684,7 +684,9 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
             val result=withContext(worker){
                 var at=System.nanoTime();val vector=embedder.embedText(query,true);lap(0,at)
                 val count=if(jevKey()!=null)Store.RERANK_CANDIDATES else Store.PASSAGES
-                at=System.nanoTime();val found=store.search(vector,state.buildingId,state.totalCount,query,count);lap(1,at)
+                // A question naming a ruling by its number ("STC Rol 17.292") searches inside that ruling.
+                val only=com.proasiste.lite.graph.SameName.caseNumber(query)?.let{store.sourcesNumbered(state.buildingId,it)}?.takeIf{it.isNotEmpty()}
+                at=System.nanoTime();val found=store.search(vector,state.buildingId,state.totalCount,query,count,only);lap(1,at)
                 at=System.nanoTime();val merged=withFacts(found,vector,query,count);lap(2,at);merged}
             var at=System.nanoTime();val tabled=withContext(worker){tableQuestion(query)};lap(3,at)
             at=System.nanoTime();val listed=if(tabled!=null)emptyList() else withContext(worker){graph.factsWithRelations(state.buildingId,com.proasiste.lite.graph.ListQuestions.relations(query),LIST_LIMIT)};lap(4,at)
@@ -1073,7 +1075,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     // A literal window within the retrieved chunk, never a generated summary.
     // Ranking still uses the complete embedding; the original page remains one tap away.
     private fun sourceExcerpt(text:String,query:String):String {
-        val words=text.split(Regex("\\s+")).filter{it.isNotEmpty()}
+        val words=text.split(SPACES).filter{it.isNotEmpty()}
         val width=42
         if(words.size<=width)return text
         val terms=Store.terms(query).toSet()
@@ -1097,6 +1099,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         /** The most facts a list answer shows. */
         const val LIST_LIMIT=40
         const val XLSX="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        private val SPACES=Regex("\\s+")
         /** Reads at most [limit] bytes. */
         fun copyBoundedBytes(input:java.io.InputStream,limit:Int):ByteArray{
             val out=java.io.ByteArrayOutputStream();val b=ByteArray(1 shl 16);var total=0
