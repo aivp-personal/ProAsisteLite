@@ -14,6 +14,7 @@ ProAsisteLocal (`com.plantroom.pocket`) loads every chunk to search, which break
 | 5 | Skills and actions on files, saved reports and decisions | **Done** (2026-11-14) |
 | 6 | Google Drive connection: index files where they live | Planned |
 | 7 | Tables in the graph: columns on types, imported spreadsheets, counting questions | Planned |
+| 8 | Memory: what you asked, what you prefer, what you do often | Planned |
 
 ## 1. Getting thousands of files in — done
 
@@ -272,3 +273,48 @@ else gets worse.
 
 Not in this step: photos and voice notes get no columns; Parquet or database connections; tables of millions of
 rows; automatic merging. 7a and 7c don't need step 6 and can come first.
+
+## 8. Memory: what you asked, what you prefer, what you do often
+
+**Planned.** After FalkorDB's agent memory design (falkordb.com, 2026-11-03), sized for one person on one phone. The
+app forgets every question once it's answered, and repeated instructions ("answer in Spanish", "always give the vote
+count") have to be typed each time. The post's three kinds of memory map onto the app; the part about serving
+100,000 customers (shards, replicas, database accounts) doesn't apply.
+
+**What the app has today.** Projects are kept apart: every graph, search and action is limited to its project, which
+is the post's one-graph-per-customer rule; incognito projects never leave the phone. Some memory exists already:
+reports, decisions, merges (`graph_aliases`), review verdicts and skills.
+
+**8a. Episodic: a dated log of each project's questions.** Each search keeps its question, the answer, who wrote
+it, the passages it used, and what was done next (sources opened, saved as a report, decided). Library → History
+lists them, newest first, searchable; any one reopens with its sources highlighted, or becomes a report. Kept until
+deleted (one entry, a date range, or all), and never kept in incognito projects. Only the log's text and links are
+stored, not copies of passages, so it stays small.
+
+**8b. Semantic: what you prefer and what the project knows.** A short list of memories per project, plus a few for
+every project: preferences ("answer in Spanish", "keep answers to five lines") and standing facts ("Minister X's
+name is also spelled Y", "in this project 'the law' means Ley 21.000"). Each is added by you, or suggested by the app
+when you correct an answer or repeat an instruction, and kept only when you accept it. Relevant memories join the
+passages sent for an answer, marked as yours and never cited as a source. Settings → Memory lists, edits and deletes
+them. Like everything else sent with a question, they go to OpenRouter only when the project's answers use it.
+
+**8c. Procedural: skills from what you do often.** When the same kind of request recurs in the log (three tables of
+votes, three summaries in one format), the app offers to save it as a skill, with its instructions drafted from your
+own words to edit before saving. Skills stay what they are today, kept for every project.
+
+**8d. Shared knowledge, joined at answer time.** Some knowledge belongs to every project: name spellings of judges
+and norms, graph types, everyday preferences. It lives once, apart from the projects, and is joined with the
+project's own at answer time, never copied into each project. A project's own memory wins where the two disagree.
+Incognito projects can read shared knowledge but never add to it.
+
+**8e. A retrieval budget.** Measure where an answer's time goes today on the Fold (embedding the question, ranking,
+graph facts, memories, Jev) and set a budget: about one second before the model starts writing. Memory lookups must
+fit inside it. Also measure each project's database size, so growth from the log shows early.
+
+**Checked by:** tests for the log (kept, reopened, deleted, never in incognito), for memories joining an answer
+without being cited, and for shared knowledge not leaking a project's own data into another; on the Fold, a
+preference given once and honoured in the next ten answers, a repeated request offered as a skill, and the retrieval
+budget met on P04; then the golden set again, so memory doesn't make answers worse.
+
+Not in this step: memories the app saves without your yes; memories shared between people or phones; anything from
+one project reaching another except shared knowledge you added.
