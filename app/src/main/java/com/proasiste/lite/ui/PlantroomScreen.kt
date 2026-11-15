@@ -884,7 +884,7 @@ private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) 
     Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 6.dp)
         .background(Steel, RoundedCornerShape(14.dp)).padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.answer")) {
         Eyebrow(when {
-            answer.fromTable.isNotEmpty() -> tr("Answer · counted from the rulings table", "Respuesta · contada en la tabla de fallos")
+            answer.fromTable.isNotEmpty() -> tr("Answer · from the rulings table", "Respuesta · de la tabla de fallos")
             answer.fromGraph -> tr("Answer · from the project graph", "Respuesta · del grafo del proyecto")
             answer.cloud -> tr("Answer · ${answer.writer} via OpenRouter", "Respuesta · ${answer.writer} vía OpenRouter")
             else -> tr("Answer · Gemini Nano on this phone", "Respuesta · Gemini Nano en este teléfono")
@@ -928,7 +928,7 @@ private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) 
                 }
             }
             Spacer(Modifier.height(6.dp))
-            Text(if (answer.fromTable.isNotEmpty()) tr("Counted by the app from columns its rules read in each ruling, with no AI. Check the cited pages.", "Contado por la app a partir de columnas que sus reglas leyeron en cada fallo, sin IA. Revisa las páginas citadas.") else if (answer.fromGraph) tr("Listed from the project graph, whose facts were extracted by AI. Check the cited pages.", "Lista del grafo del proyecto, cuyos datos fueron extraídos por IA. Revisa las páginas citadas.") else tr("Written by AI from your files. Check the cited pages.", "Escrito por IA a partir de tus archivos. Revisa las páginas citadas."), fontFamily = NotoSerif, color = Muted, fontSize = 11.sp)
+            Text(if (answer.fromTable.isNotEmpty()) tr("From the rulings table, which the app's rules read in each ruling, with no AI. Check the cited pages.", "De la tabla de fallos, que las reglas de la app leyeron en cada fallo, sin IA. Revisa las páginas citadas.") else if (answer.fromGraph) tr("Listed from the project graph, whose facts were extracted by AI. Check the cited pages.", "Lista del grafo del proyecto, cuyos datos fueron extraídos por IA. Revisa las páginas citadas.") else tr("Written by AI from your files. Check the cited pages.", "Escrito por IA a partir de tus archivos. Revisa las páginas citadas."), fontFamily = NotoSerif, color = Muted, fontSize = 11.sp)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onShare, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("plantroom.share-answer")) {
                     if (incognito) { Glyph("incognito-on", Gold, Modifier.size(16.dp)); Spacer(Modifier.width(7.dp)) }

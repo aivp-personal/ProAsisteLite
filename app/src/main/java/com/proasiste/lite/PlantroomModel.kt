@@ -301,6 +301,8 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     /** A question a table answers by counting, listing or grouping, or null for the normal search. */
     private fun tableQuestion(question:String):Pair<String,com.proasiste.lite.graph.TableQuestions.Answer>?{
         val project=state.buildingId
+        // "¿Qué resolvió la STC 17.292?": the outcome the rules read in that ruling's decision, not a passage that discusses it.
+        com.proasiste.lite.graph.TableQuestions.decision(question,columns.rows(project,com.proasiste.lite.runtime.RulingColumns.TYPE,links=false),!L10n.spanish)?.let{return com.proasiste.lite.runtime.RulingColumns.TYPE to it}
         for((type,_) in columns.types(project)){
             val defs=defsOf(project,type).ifEmpty{continue}
             com.proasiste.lite.graph.TableQuestions.answer(question,type,typeWords(type),columns.rows(project,type),defs,!L10n.spanish)?.let{return type to it}
@@ -691,7 +693,10 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
                 var at=System.nanoTime();val vector=embedder.embedText(query,true);lap(0,at)
                 val count=if(jevKey()!=null)Store.RERANK_CANDIDATES else Store.PASSAGES
                 // A question naming a ruling by its number ("STC Rol 17.292") searches inside that ruling.
+                // …or a party ("el caso de Salcobrand"), found by its name in the rulings table: inside that party's rulings.
                 val only=com.proasiste.lite.graph.SameName.caseNumber(query)?.let{store.sourcesNumbered(state.buildingId,it)}?.takeIf{it.isNotEmpty()}
+                    ?:com.proasiste.lite.graph.TableQuestions.byParty(query,columns.rows(state.buildingId,com.proasiste.lite.runtime.RulingColumns.TYPE,links=false))
+                        .flatMap{r->r.cells.values.flatten().map{it.sourceId}}.toSet().takeIf{it.isNotEmpty()}
                 at=System.nanoTime();val found=store.search(vector,state.buildingId,state.totalCount,query,count,only);lap(1,at)
                 at=System.nanoTime();val merged=withFacts(found,vector,query,count);lap(2,at);merged}
             var at=System.nanoTime();val tabled=withContext(worker){tableQuestion(query)};lap(3,at)

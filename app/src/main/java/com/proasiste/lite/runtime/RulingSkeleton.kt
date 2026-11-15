@@ -292,6 +292,24 @@ class RulingSkeleton private constructor(
     object Names {
         private val PARTICLES = setOf("de", "del", "la", "las", "los", "y", "e", "en", "a", "el", "por", "para", "con")
 
+        private val NOT_NAME_WORDS = setOf("que", "presente", "teniendo", "preceptuado", "articulo", "articulos", "certifico", "certifica", "presidenta", "presidente",
+            "redacto", "redactor", "sentencia", "tribunal", "constitucional", "ministro", "ministra", "ministros", "secretario", "secretaria", "suplente",
+            "abogado", "abogada", "integrado", "integrada", "pleno", "sala", "rol", "autoriza", "considerando", "vistos", "resuelve", "conforme", "acordada", "voto", "firman", "todas", "todos", "sus", "partes", "parte", "requerimiento", "recurso", "ley", "codigo")
+
+        /**
+         * Whether [s] reads as a person's name: two to seven words, no digits or punctuation such as ":" or "°", every word
+         * but particles capitalised, and none of the words that show up when a signature block runs into the text around
+         * it ("Y TENIENDO PRESENTE lo preceptuado", "CERTIFICO: Que Presidenta").
+         */
+        fun isPerson(s: String): Boolean {
+            val t = s.trim()
+            if (t.length > 70 || t.any { it.isDigit() || it in ":;°º()[]\"«»" }) return false
+            val words = t.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            if (words.size !in 2..7) return false
+            if (words.any { fold(it).trim('.', ',') in NOT_NAME_WORDS }) return false
+            return words.all { w -> fold(w) in PARTICLES || w.first().isUpperCase() }
+        }
+
         /** "MARIO MEZA VÁSQUEZ" → "Mario Meza Vásquez"; keeps acronyms such as "S.A." and "ICH". */
         fun titleCase(upper: String): String = upper.trim().split(" ").filter { it.isNotEmpty() }.mapIndexed { i, w ->
             val lower = w.lowercase()
@@ -327,6 +345,7 @@ class RulingSkeleton private constructor(
             return raw.split(Regex(",|\\s+[ye]\\s+")).map { it.trim(' ', '.', ',', ';').replace(Regex("^(?:los|las)\\s+"), "") }
                 .filter { it.split(" ").size >= 2 && it.first().isUpperCase() }
                 .map { it.replace(Regex("\\s+"), " ") }
+                .filter(Names::isPerson)
         }
 
         /** The drafter, matched to a signature name when possible, and where the sentence is. */

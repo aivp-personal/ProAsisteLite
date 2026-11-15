@@ -46,10 +46,12 @@ object RulingColumns {
         if (s.rulingFrom.isNotEmpty()) out += NewValue(NUMBER_FROM, s.rulingFrom, 1)
         f.firstOrNull { it.relation == "REQUIERE_EN" }?.let { out += NewValue(CASE, it.obj, it.page) }
         f.filter { it.relation == "IMPUGNA" }.forEach { out += NewValue(NORMS, it.obj, it.page) }
-        f.filter { it.relation == "INTEGRA" }.forEach { out += NewValue(JUDGES, it.subject, it.page) }
-        f.firstOrNull { it.relation == "REDACTA" && it.objectType == "Fallo" }?.let { out += NewValue(DRAFTER, it.subject, it.page) }
-        f.filter { it.relation == "DISIENTE" }.forEach { out += NewValue(DISSENT, it.subject, it.page) }
-        f.filter { it.relation == "PREVIENE" }.forEach { out += NewValue(CONCUR, it.subject, it.page) }
+        // Judges' columns hold people only: a signature block that ran into other text gives no name here.
+        val person = RulingSkeleton.Names::isPerson
+        f.filter { it.relation == "INTEGRA" && person(it.subject) }.forEach { out += NewValue(JUDGES, it.subject, it.page) }
+        f.firstOrNull { it.relation == "REDACTA" && it.objectType == "Fallo" && person(it.subject) }?.let { out += NewValue(DRAFTER, it.subject, it.page) }
+        f.filter { it.relation == "DISIENTE" && person(it.subject) }.forEach { out += NewValue(DISSENT, it.subject, it.page) }
+        f.filter { it.relation == "PREVIENE" && person(it.subject) }.forEach { out += NewValue(CONCUR, it.subject, it.page) }
         return s.ruling to out
     }
 

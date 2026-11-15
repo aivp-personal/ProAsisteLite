@@ -66,6 +66,7 @@ object TableQuestions {
         }
         // From the question as typed: folding would split "18.695" into two numbers.
         val numbers = NUMBER.findAll(question).map { it.value.replace(".", "") }.filter { it !in years && it.length <= 6 }.toSet()
+        var several: String? = null
         for (d in defs) {
             if (d.kind == ColumnKind.DATE || d.kind == ColumnKind.NUMBER || d.kind == ColumnKind.BOOL) continue
             val distinct = rows.flatMap { it.values(d.name) }.distinct()
@@ -77,6 +78,8 @@ object TableQuestions {
                 distinct.any { Regex("\\d").containsMatchIn(it) } && numbers.isNotEmpty() && pointed(d.name) ->
                     distinct.filter { v -> val vn = NUMBER.findAll(v).map { it.value.replace(".", "") }.toSet(); numbers.all { it in vn } }
                         .takeIf { it.isNotEmpty() }?.joinToString(" | ")
+                // Several outcomes named ("acogieron, rechazaron o declararon inadmisible") ask for a breakdown, not a filter.
+                distinct.size <= 15 && namesSeveral(distinct, words) -> { several = several ?: d.name; null }
                 distinct.size <= 15 -> best(distinct, words)
                 else -> null
             }
@@ -91,6 +94,7 @@ object TableQuestions {
         val groupWords = Regex("\\b(?:por|per|by|segun|each|cada)\\s+(\\p{L}+)").findAll(folded).map { it.groupValues[1] }.toList()
         var groupBy: String? = defs.map { it.name }.firstOrNull { c -> groupWords.any { g -> ((HINTS[c] ?: emptyList()) + Graph.keyOf(c).split(" ")).any { h -> h.length >= 3 && g.startsWith(h) } } }
         if (groupBy == null && most && personColumn != null && filters.none { it.column == personColumn }) groupBy = personColumn
+        if (groupBy == null && several != null) groupBy = several
         if (!counting && !listing && groupBy == null) return null
         if (filters.isEmpty() && groupBy == null && !counting) return null
 
@@ -122,6 +126,9 @@ object TableQuestions {
         }
         val sorted = matching.map(::focus).sortedWith(compareByDescending<TableRow> { r -> dateColumn?.let { r.first(it)?.num } ?: 0.0 }.thenBy { it.node.name })
         val head = if (english) "${matching.size} $noun$about." else "${matching.size} $noun$about."
+        // Nothing found through a name, a norm or another free-text column may mean the question was read wrongly: search
+        // answers instead. A zero from the year, outcome or kind alone is a real answer.
+        if (matching.isEmpty() && filters.any { it.column != dateColumn && it.column != "Resultado" && it.column != "Tipo" }) return null
         if (matching.isEmpty()) return Answer(if (english) "No $noun$about." else "Ningún ${typeName.lowercase()}$about.", emptyList(), filters, null)
         val shown = sorted.take(LIMIT)
         val citeColumn = filters.lastOrNull { it.column != dateColumn }?.column ?: dateColumn
@@ -135,6 +142,64 @@ object TableQuestions {
         return Answer(head + "\n" + lines.joinToString("\n") + more, shown.map { it to citeColumn }, filters, null)
     }
 
+    /**
+     * "¿Qué resolvió la STC 17.292?": the outcome the rules read in the decision section of the ruling the question names
+     * by its number, with its date and kind, citing the page of the decision. Each decision of the case is given when it
+     * has several (an admissibility resolution and the judgment). Null when the question names no ruling, doesn't ask
+     * what was decided, or the table has no outcome for it: then search answers.
+     */
+    fun decision(question: String, rows: List<TableRow>, english: Boolean): Answer? {
+        val folded = " " + Graph.keyOf(question) + " "
+        val asksDate = WHEN.any { folded.contains(it) }
+        if (DECIDED.none { folded.contains(it) } && !asksDate) return null
+        val number = SameName.caseNumber(question)
+        val named = if (number != null) rows.filter { SameName.caseNumber(it.node.name) == number } else byParty(question, rows)
+        if (asksDate) {
+            val dated = named.filter { it.cells["Fecha"].orEmpty().isNotEmpty() }
+            if (dated.isEmpty()) return null
+            return Answer(dated.mapIndexed { i, r -> "${r.node.name}: ${r.first("Fecha")!!.value} [${i + 1}]" }.joinToString("\n"), dated.map { it to "Fecha" }, emptyList(), null)
+        }
+        val matches = named.filter { it.cells["Resultado"].orEmpty().isNotEmpty() }
+        if (matches.isEmpty()) return null
+        val lines = mutableListOf<String>(); val cited = mutableListOf<Pair<TableRow, String?>>()
+        for (r in matches) for (outcome in r.cells.getValue("Resultado").distinctBy { it.sourceId }) {
+            val focused = r.copy(cells = r.cells.mapValues { (_, cs) -> cs.sortedBy { if (it.sourceId == outcome.sourceId) 0 else 1 } })
+            val date = focused.first("Fecha")?.takeIf { it.sourceId == outcome.sourceId }?.value
+            val kind = focused.first("Tipo")?.takeIf { it.sourceId == outcome.sourceId }?.value
+            cited += focused to "Resultado"
+            lines += "${r.node.name}: ${outcome.value}" + listOfNotNull(kind, date).joinToString(", ", " (", ")").takeIf { kind != null || date != null }.orEmpty() + " [${cited.size}]"
+        }
+        val head = if (lines.size > 1) (if (english) "${lines.size} decisions:" else "${lines.size} decisiones:") + "\n" else ""
+        return Answer(head + lines.joinToString("\n"), cited, listOf(Filter("Resultado", number ?: matches.joinToString(", ") { it.node.name })), null)
+    }
+    /** Words that ask when a ruling was given. */
+    private val WHEN = listOf(" cuando se dict", " fecha de la sentencia", " fecha del fallo", " when was")
+    /** Words in company and institution names that don't pick one out. */
+    private val GENERIC = setOf("sociedad", "spa", "ltda", "limitada", "empresa", "empresas", "compania", "servicios", "inversiones", "comercial", "ilustre",
+        "municipalidad", "chile", "nacional", "juez", "jueza", "juzgado", "letras", "tribunal", "corte", "apelaciones", "suplente", "abogado", "presidente", "republica")
+
+    /**
+     * The rows whose filer (Requirente) the question names: "el caso de Salcobrand", "Patricia Quiroz Riffo", "Kimen
+     * Montessori". A filer's distinctive words are those few other filers share, leaving out words like "Sociedad" or
+     * "Municipalidad"; it is named when the question holds two of them, or its only one when that is a long word.
+     * More than ten matches means the words weren't distinctive after all: none.
+     */
+    fun byParty(question: String, rows: List<TableRow>): List<TableRow> {
+        val words = Graph.keyOf(question).split(" ").toSet()
+        fun tokens(v: String) = Graph.keyOf(v).split(" ").filter { it.length >= 3 && it !in GENERIC && it !in setOf("del", "las", "los", "con", "por") && it.none(Char::isDigit) }.toSet()
+        val filers = rows.associateWith { r -> r.values("Requirente").flatMap(::tokens).toSet() }
+        val df = filers.values.flatten().groupingBy { it }.eachCount()
+        val found = filers.filter { (_, ts) ->
+            val distinctive = ts.filter { (df[it] ?: 0) <= 5 }
+            val hits = distinctive.count { it in words }
+            hits >= 2 || (distinctive.size == 1 && hits == 1 && distinctive.single().length >= 5)
+        }.keys.toList()
+        return if (found.size in 1..10) found else emptyList()
+    }
+
+    /** Words that ask what a ruling decided. */
+    private val DECIDED = listOf(" resolv", " resuelv", " decid", " decision", " resultado", " outcome", " ruled ", " acog", " rechaz", " fallo de la", " como termin")
+
     const val LIMIT = 40
     /** A number as written, thousands dots included: "18.695", "60". */
     private val NUMBER = Regex("\\d[\\d.]*\\d|\\d")
@@ -147,7 +212,10 @@ object TableQuestions {
      * other value has, or all its words when it has none) starts a word of the question, or the other way round. The
      * value matching the most words wins, so "acogidos en parte" picks "Acogido en parte" over "Acogido".
      */
-    private fun best(values: List<String>, words: List<String>): String? {
+    private fun best(values: List<String>, words: List<String>): String? = named(values, words).maxByOrNull { it.second }?.first
+
+    /** Every value of the few the question names, with how many of its words it matches. */
+    private fun named(values: List<String>, words: List<String>): List<Pair<String, Int>> {
         val split = values.associateWith { v -> Graph.keyOf(v).split(" ").filter { it.length >= 4 } }
         val all = split.values.flatten().groupingBy { it }.eachCount()
         fun hit(w: String) = words.any { q -> q.startsWith(w.take(5)) || (q.length >= 5 && w.startsWith(q)) }
@@ -155,6 +223,9 @@ object TableQuestions {
             if (ws.isEmpty()) return@mapNotNull null
             val distinctive = ws.filter { all[it] == 1 }.ifEmpty { ws }
             if (distinctive.all(::hit)) v to ws.count(::hit) else null
-        }.maxByOrNull { it.second }?.first
+        }
     }
+
+    /** Whether the question names two or more different values of a column ("acogieron, rechazaron o inadmisible"). */
+    private fun namesSeveral(values: List<String>, words: List<String>) = named(values, words).map { it.first.substringBefore(" ") }.distinct().size >= 2
 }
