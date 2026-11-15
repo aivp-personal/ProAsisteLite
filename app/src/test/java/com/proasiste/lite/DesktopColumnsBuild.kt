@@ -50,9 +50,27 @@ class DesktopColumnsBuild {
         val pool = Executors.newFixedThreadPool(maxOf(1, Runtime.getRuntime().availableProcessors() - 2))
         val started = System.currentTimeMillis(); var n = 0; var rulings = 0; var failed = 0
         try {
-            val futures = todo.map { (hash, f) -> Callable { hash to runCatching { RulingColumns.of(engine.pagesForAi(Source(hash, f.path, "pdf", "", "", "", f.name, false)), f.name) } } }.map(pool::submit)
+            val futures = todo.map { (hash, f) -> Callable { hash to runCatching {
+                val pages = engine.pagesForAi(Source(hash, f.path, "pdf", "", "", "", f.name, false))
+                val cols = RulingColumns.of(pages, f.name)
+                // What a person should look at: a number read from the text, or one the file name disagrees with.
+                val id = com.proasiste.lite.runtime.LegalFacts.identity(pages, f.name)
+                val own = Regex("\\d[\\d.]*").find(id.name)?.value?.replace(".", "")
+                val note = when {
+                    cols == null -> null
+                    id.titleNumber != null && own != id.titleNumber -> "El nombre del archivo dice ${id.titleNumber}; el texto no lo nombra como rol"
+                    id.from == com.proasiste.lite.runtime.LegalFacts.FROM_TEXT -> "Leído del primer rol del texto: puede ser uno citado"
+                    id.from == com.proasiste.lite.runtime.LegalFacts.FROM_NONE -> "Sin número: se usa el nombre del archivo"
+                    else -> null
+                }
+                val v = cols?.second.orEmpty()
+                Triple(cols, note?.let { listOf(f.name, id.name, id.from, id.titleNumber.orEmpty(), it, v.firstOrNull { x -> x.column == RulingColumns.OUTCOME }?.value.orEmpty(), v.firstOrNull { x -> x.column == RulingColumns.DATE }?.value.orEmpty()) }, f.name)
+            } } }.map(pool::submit)
+            val review = mutableListOf<List<String>>()
             for (fut in futures) {
-                val (hash, result) = fut.get()
+                val (hash, read) = fut.get()
+                val result = read.map { it.first }
+                read.getOrNull()?.second?.let { review += it }
                 db.beginTransaction()
                 try {
                     db.delete("\"values\"", "sha256 = ?", arrayOf(hash))
@@ -68,6 +86,10 @@ class DesktopColumnsBuild {
                 n++; if (result.isFailure) failed++
                 if (n % 100 == 0 || n == todo.size) println("COLUMNS: $n/${todo.size} files · $rulings rulings · $failed not read · ${(System.currentTimeMillis() - started) / 1000} s")
             }
+            File(File(out).parentFile, "rulings-review.xlsx").outputStream().use { o ->
+                com.proasiste.lite.runtime.TableFile.writeXlsx(o, "Revisar", listOf("Archivo", "Fallo (nombre usado)", "Rol leído de", "Número en el nombre del archivo", "Nota", "Resultado", "Fecha"), review.sortedBy { it[0] })
+            }
+            println("COLUMNS: ${review.size} files to review in rulings-review.xlsx")
         } finally { pool.shutdownNow(); db.close() }
     }
 }

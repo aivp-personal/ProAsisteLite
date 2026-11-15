@@ -110,13 +110,25 @@ object TableQuestions {
             return Answer(head + "\n" + sorted.take(25).joinToString("\n") { "${it.key}: ${it.value}" }, emptyList(), filters, g)
         }
 
-        val sorted = matching.sortedWith(compareByDescending<TableRow> { r -> dateColumn?.let { r.first(it)?.num } ?: 0.0 }.thenBy { it.node.name })
+        // A case can hold several decisions (an admissibility resolution and the judgment are both "Rol X"): each row is
+        // shown and cited through the file whose values matched, its date and outcome from that same file.
+        val wantedOutcome = filters.firstOrNull { it.column == "Resultado" }?.value?.split(", ")?.toSet()
+        fun focus(r: TableRow): TableRow {
+            val outcomes = r.cells["Resultado"].orEmpty()
+            val source = (wantedOutcome?.let { w -> outcomes.firstOrNull { it.value in w } } ?: outcomes.firstOrNull())?.sourceId
+                ?: years.takeIf { it.isNotEmpty() }?.let { ys -> dateColumn?.let { c -> r.cells[c]?.firstOrNull { it.value.take(4) in ys } }?.sourceId }
+                ?: return r
+            return r.copy(cells = r.cells.mapValues { (_, cs) -> cs.sortedBy { if (it.sourceId == source) 0 else 1 } })
+        }
+        val sorted = matching.map(::focus).sortedWith(compareByDescending<TableRow> { r -> dateColumn?.let { r.first(it)?.num } ?: 0.0 }.thenBy { it.node.name })
         val head = if (english) "${matching.size} $noun$about." else "${matching.size} $noun$about."
         if (matching.isEmpty()) return Answer(if (english) "No $noun$about." else "Ningún ${typeName.lowercase()}$about.", emptyList(), filters, null)
         val shown = sorted.take(LIMIT)
         val citeColumn = filters.lastOrNull { it.column != dateColumn }?.column ?: dateColumn
         val lines = shown.mapIndexed { i, r ->
-            val parts = listOfNotNull(r.node.name, dateColumn?.let { r.values(it).firstOrNull() }, r.values("Resultado").firstOrNull())
+            val decisions = r.cells["Resultado"].orEmpty().map { it.sourceId }.distinct().size
+            val parts = listOfNotNull(r.node.name, dateColumn?.let { r.values(it).firstOrNull() }, r.values("Resultado").firstOrNull(),
+                (if (english) "$decisions decisions" else "$decisions decisiones").takeIf { decisions > 1 })
             parts.joinToString(" · ") + " [${i + 1}]"
         }
         val more = if (sorted.size > LIMIT) (if (english) "\n…and ${sorted.size - LIMIT} more." else "\n…y ${sorted.size - LIMIT} más.") else ""

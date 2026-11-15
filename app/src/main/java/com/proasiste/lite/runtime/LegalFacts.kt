@@ -139,14 +139,46 @@ object LegalFacts {
     }
 
     /** The ruling's own node, in canonical form ("STC Rol 17.292"), from the court and role number on its first page. */
-    fun thisRuling(pages: List<DeepSeekFacts.PageText>, title: String): String {
+    fun thisRuling(pages: List<DeepSeekFacts.PageText>, title: String): String = identity(pages, title).name
+
+    /** A ruling's own name and where it was read: [FROM_TITLE], [FROM_HEADING], [FROM_CLOSING], [FROM_TEXT], or [FROM_NONE]. */
+    data class Identity(val name: String, val from: String, val titleNumber: String?)
+    const val FROM_TITLE = "nombre del archivo"; const val FROM_HEADING = "encabezado"; const val FROM_CLOSING = "cierre"
+    const val FROM_TEXT = "texto"; const val FROM_NONE = "sin número"
+
+    /**
+     * The ruling's own number. A file named "STC 1810-10 …" gives it. Otherwise the ruling states it in its heading
+     * ("Sentencia Rol 17.292-26 INA", first lines of page 1) or its closing line ("Rol N° 16.231-25-INA", before the
+     * signatures); a number only in the reasoning is usually a ruling it cites, and the first one on page 1 is often the
+     * pending case's ("Rol N° 3868-2010, seguido ante la Corte"). Where the file's own name holds a number ("16231_
+     * Inadmisible….pdf") and the text names that number as a role anywhere, that number wins; failing that the file
+     * name's number all the same (the collection was filed by case number), then the closing line, then the heading,
+     * and only then the first role in the text.
+     */
+    fun identity(pages: List<DeepSeekFacts.PageText>, title: String): Identity {
         val first = pages.firstOrNull()?.text.orEmpty()
         val court = courtOf(first) ?: Court.TC
-        // A file named after its ruling ("STC 1810-10 …") gives its own number; the first role on page 1 is often the
-        // pending case's ("Rol N° 3868-2010, seguido ante la Corte de Apelaciones").
-        TITLE_ROLE.find(title)?.let { m -> return canonicalRuling(m.value, if (m.groupValues[1].uppercase() == "SCS") Court.CS else Court.TC) }
-        return ROLE.find(first)?.let { canonicalRuling(it.value, court) } ?: title
+        TITLE_ROLE.find(title)?.let { m -> return Identity(canonicalRuling(m.value, if (m.groupValues[1].uppercase() == "SCS") Court.CS else Court.TC), FROM_TITLE, null) }
+        fun number(role: String) = ROLE_PARTS.find(role)?.groupValues?.get(1)?.replace(".", "")
+        // A Tribunal case number: no leading zero, and below 25,000 ("091024" in a bulletin's name is a date).
+        val titleNumbers = com.proasiste.lite.Store.titleNumbers(title).filter { it.length in 3..6 && !it.startsWith("0") && it.toInt() <= 25_000 }
+        val heading = ROLE.find(first.take(HEADING_CHARS))?.value
+        val tail = pages.takeLast(2).joinToString("\n") { it.text }
+        val closing = ROLE.findAll(tail).lastOrNull()?.value
+        val inText = pages.flatMap { p -> ROLE.findAll(p.text).map { it.value }.toList() }
+        val fromTitle = titleNumbers.firstOrNull { n -> inText.any { number(it) == n } }
+        val titleNumber = titleNumbers.firstOrNull()
+        return when {
+            fromTitle != null -> Identity(canonicalRuling(inText.first { number(it) == fromTitle }, court), when (fromTitle) { closing?.let(::number) -> FROM_CLOSING; heading?.let(::number) -> FROM_HEADING; else -> FROM_TITLE }, titleNumber)
+            // A file the collection named by its case number is trusted over a number the text may only cite.
+            titleNumber != null -> Identity(canonicalRuling("Rol $titleNumber", court), FROM_TITLE, titleNumber)
+            closing != null -> Identity(canonicalRuling(closing, court), FROM_CLOSING, titleNumber)
+            heading != null -> Identity(canonicalRuling(heading, court), FROM_HEADING, titleNumber)
+            inText.isNotEmpty() -> Identity(canonicalRuling(inText.first(), court), FROM_TEXT, null)
+            else -> Identity(title, FROM_NONE, null)
+        }
     }
+    private const val HEADING_CHARS = 400
     private val TITLE_ROLE = Regex("\\b(STC|SCS)\\s+(?:Rol\\s*)?(?:N[°º]\\s*)?\\d[\\d.]*(?:-\\d{2,4})?", RegexOption.IGNORE_CASE)
 
     /**

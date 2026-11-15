@@ -31,6 +31,8 @@ class RulingSkeleton private constructor(
     val filer: String? = null,
     /** The date it was given, as ISO (2026-09-02), checked against its filing ([RulingDate]); null when none passes. */
     val date: String? = null,
+    /** Where the ruling's own number was read ([LegalFacts.Identity.from]): heading, closing line, file name or text. */
+    val rulingFrom: String = "",
 ) {
     class Vote(val name: String, val kind: String, val sense: String, val ministers: List<String>, val firstPage: Int, val lastPage: Int, val text: String)
 
@@ -52,7 +54,8 @@ class RulingSkeleton private constructor(
             if (pages.isEmpty()) return null
             val first = pages.first().text
             val court = LegalFacts.courtOf(first) ?: return null
-            val ruling = LegalFacts.thisRuling(pages, title)
+            val identity = LegalFacts.identity(pages, title)
+            val ruling = identity.name
             val doc = Document(pages)
             val facts = mutableListOf<NewFact>()
             val known = mutableListOf<Pair<String, String>>()
@@ -169,7 +172,7 @@ class RulingSkeleton private constructor(
             knownRulings += Citations.allRoles(doc.text, court, ruling)
             known += ministers.map { "Ministro" to it }
             known += knownRulings.map { "Fallo" to it }
-            return RulingSkeleton(ruling, court, facts.distinctBy { listOf(it.subject, it.relation, it.obj, it.statement) }, ministers, knownRulings, known.distinct(), votes, outcome, requirente, dated?.iso)
+            return RulingSkeleton(ruling, court, facts.distinctBy { listOf(it.subject, it.relation, it.obj, it.statement) }, ministers, knownRulings, known.distinct(), votes, outcome, requirente, dated?.iso, identity.from)
         }
 
         private fun fact(page: Int, st: String, s: String, rel: String, ot: String, o: String, statement: String) =
