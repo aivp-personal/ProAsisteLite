@@ -85,6 +85,68 @@ class RulingIdentityTest {
         assertEquals("Resultado", g.groupedBy)
     }
 
+    @Test fun aFactAboutOneRulingComesFromItsRow() {
+        fun row(id: Long, name: String, vararg cols: Pair<String, List<String>>) = TableRow(GraphNode(id, "Fallo", name.lowercase(), name),
+            cols.associate { (c, vs) -> c to vs.map { Cell(it, null, "S$id", 3) } })
+        val rows = listOf(
+            row(1, "STC Rol 16.708", "Requirente" to listOf("Conjunto Residencial Las Terrazas de Cerrillos"), "Disidentes" to listOf("Miguel Ángel Fernández González", "Héctor Mery Romero", "Marcela Inés Peredo Rojas", "Mario René Gómez Montoya")),
+            row(2, "STC Rol 17.089", "Requirente" to listOf("David Orlando Sepúlveda Cid, Juez Suplente del Tercer Juzgado de Letras de Iquique"), "Resultado" to listOf("Acogido"), "Normas impugnadas" to listOf("Ley N° 18.101, art. 8 N° 2")),
+            row(3, "STC Rol 11.825", "Requirente" to listOf("David Andrés Vega Vega"), "Resultado" to listOf("Acogido")),
+            row(4, "STC Rol 16.923", "Requirente" to listOf("Sociedad Kimen Montessori SpA"), "Normas impugnadas" to listOf("Código de Procedimiento Civil, art. 358 N° 4 y 5")),
+            row(5, "STC Rol 17.063", "Requirente" to listOf("Patricia Quiroz Riffo"), "Normas impugnadas" to listOf("Ley N° 19.947, art. 46 letra c")),
+            row(6, "STC Rol 16.878", "Requirente" to listOf("Agrícola Llahuen S.A."), "Disidentes" to listOf("Héctor Mery Romero")),
+            row(7, "STC Rol 16.930", "Requirente" to listOf("Miguel Eduardo Vargas Correa"), "Fecha" to listOf("2026-05-13")),
+            row(8, "STC Rol 16.361", "Requirente" to listOf("Norma Del Carmen Caamaño Rodríguez"), "Normas impugnadas" to listOf("DL N° 2.695, art. 15"), "Resultado" to listOf("Rechazado")),
+        ) + (10L..17L).map { row(it, "STC Rol $it", "Requirente" to listOf("Miguel Vargas Soto $it", "Eduardo Correa Pinto")) }  // the same words in many filers
+        fun ask(q: String) = TableQuestions.decision(q, rows, false)?.text
+        assertEquals("STC Rol 16.708: Miguel Ángel Fernández González, Héctor Mery Romero, Marcela Inés Peredo Rojas, Mario René Gómez Montoya [1]", ask("¿Qué ministros votaron en contra en la sentencia Rol 16.708?"))
+        assertEquals("STC Rol 16.878: Héctor Mery Romero [1]", ask("¿Qué ministros disintieron en el caso de Agrícola Llahuen?"))
+        assertEquals("STC Rol 17.089: David Orlando Sepúlveda Cid, Juez Suplente del Tercer Juzgado de Letras de Iquique [1]", ask("¿Quién presentó el requerimiento sobre arrendamiento en Iquique?"))
+        assertEquals("STC Rol 17.089: Acogido [1]", ask("¿Cómo resolvió el Tribunal el requerimiento de David Sepúlveda Cid?"))
+        assertEquals("STC Rol 16.923: Código de Procedimiento Civil, art. 358 N° 4 y 5 [1]", ask("¿Qué norma impugnó Kimen Montessori?"))
+        assertEquals("STC Rol 17.063: Ley N° 19.947, art. 46 letra c [1]", ask("¿Qué norma de la Ley de Matrimonio Civil fue impugnada?"))
+        assertEquals("STC Rol 16.930: 2026-05-13 [1]", ask("¿Cuándo se dictó la sentencia de Miguel Eduardo Vargas Correa?"))
+        assertEquals("STC Rol 16.361: Rechazado [1]", ask("¿Qué resolvió el Tribunal en el caso de Norma Caamaño?"))
+        // A common word that is also in a filer's name doesn't pick that filer.
+        val withCompany = rows + row(20, "STC Rol 15.183", "Requirente" to listOf("Transportes Tecnología y Giros EGT Limitada"))
+        assertTrue(TableQuestions.byParty("¿Qué boletín corresponde al proyecto de ley sobre tecnología y conocimiento?", withCompany).isEmpty())
+        // What was argued or said, a question about a topic, not a ruling: search answers.
+        assertEquals(null, ask("¿Qué alegó la requirente en la sentencia Rol 16.708?"))
+        assertEquals(null, ask("¿Qué dijo el voto en contra en la sentencia Rol 16.708?"))
+        assertEquals(null, ask("¿Por qué los ministros disidentes querían acoger el requerimiento de Agrícola Llahuen?"))
+        assertEquals(null, ask("¿Qué norma se impugna con más frecuencia?"))
+        assertEquals(null, ask("¿Qué ministros votaron en contra en los casos de pensiones?"))
+    }
+
+    @Test fun aFilersNameLosesWhatVistosSaysBeforeAndAfterIt() {
+        val f = RulingSkeleton.Names::filer
+        assertEquals("Compañía Minera Manto de Oro", f("Y CONSIDERANDO: 1°. Que, con fecha 24 de enero de 2025, la Compañía Minera Manto de Oro"))
+        assertEquals("Cesar Valenzuela Saavedra", f("Y CONSIDERANDO: 1º. Que, a fojas 1, Cesar Valenzuela Saavedra"))
+        assertEquals("LOI Chile SpA", f("Introducción A fojas 1, con fecha 15 de septiembre de 2022, LOI Chile SpA."))
+        assertEquals("Paulina Celedón González", f("Introducciónypreceptivalegalimpugnada A fojas 1, con fecha 25 de octubre de 2021, doña Paulina Celedón González"))
+        assertEquals("Claro Chile S.A.", f("Introducción y preceptiva legal impugnada A fojas 1 y 140, Claro Chile S.A."))
+        assertEquals("Eduardo Alfonso Hartwig Iturriaga", f("Solicitud de inaplicabilidad. Con fecha 14 de septiembre de 2015, don Eduardo Alfonso Hartwig Iturriaga"))
+        assertEquals("Raúl Martínez Castillo", f("señor Raúl Martínez Castillo, con fecha 11 de diciembre de 2009"))
+        assertEquals("Inversiones e Inmobiliaria Océano S.A. y Tenglo S.A.", f("Inversiones e Inmobiliaria Océano S.A. y Tenglo S.A. -en adelante, la parte requirente-"))
+        assertEquals("Salcobrand S.A.", f("SALCOBRAND S.A."))
+        assertEquals("Jilberto Isac Ayacady Asencio", f("con fecha 14 de mayo de 2025 Jilberto Isac Ayacady Asencio"))
+        assertEquals("Iván Meíéndez Lados", f("con fecha ii de diciembre de dos mil dieciocho, Iván Meíéndez Lados"))
+        assertEquals("Nexxo S.A", f("Nexxo S.A, representada convencionalmente por Javiera Vega Vilicic"))
+        assertEquals("Negocios de Familia SpA", f("Negocios de Familia SpA, en presentación rectificada a fojas 70 del día 29 del mismo mes y año"))
+    }
+
+    @Test fun theChallengedNormsKeepTheirPartsAndStopAtTheCodesName() {
+        fun norms(caption: String) = RulingSkeleton.Header.norms(caption)
+        assertEquals(listOf("Código de Procedimiento Civil, art. 358 N° 4 y 5"),
+            norms("REQUERIMIENTO DE INAPLICABILIDAD POR INCONSTITUCIONALIDAD RESPECTO DEL ARTÍCULO 358, NUMERALES 4° Y 5°, DEL CÓDIGO DE PROCEDIMIENTO CIVIL SOCIEDAD KIMEN MONTESSORI SPA"))
+        assertEquals(listOf("Ley N° 18.101, art. 8 N° 2"), norms("REQUERIMIENTO DE INAPLICABILIDAD RESPECTO DEL ARTÍCULO 8°, NUMERAL 2), DE LA LEY N° 18.101"))
+        assertEquals(listOf("Ley N° 19.947, art. 46 letra c"), norms("REQUERIMIENTO DE INAPLICABILIDAD RESPECTO DEL ARTÍCULO 46, LETRA C), DE LA LEY N° 19.947, DE MATRIMONIO CIVIL"))
+        assertEquals(listOf("Código del Trabajo, art. 429 inc. 1"), norms("REQUERIMIENTO DE INAPLICABILIDAD RESPECTO DEL ARTÍCULO 429, INCISO PRIMERO, DEL CÓDIGO DEL TRABAJO"))
+        assertEquals(listOf("Código de Procedimiento Civil, art. 499 N° 2", "Código de Procedimiento Civil, art. 500"), norms("REQUERIMIENTO DE INAPLICABILIDAD RESPECTO DE LOS ARTÍCULOS 499, N° 2 Y 500 DEL CÓDIGO DE PROCEDIMIENTO CIVIL"))
+        assertEquals(listOf("Código del Trabajo, art. 472"), norms("REQUERIMIENTO DE INAPLICABILIDAD RESPECTO DEL ARTÍCULO 472 DEL CÓDIGO DE TRABAJO"))
+        assertEquals(listOf("Ley N° 19.886, art. 4", "Ley N° 19.886, art. 35"),norms("REQUERIMIENTO DE INAPLICABILIDAD RESPECTO DE LOS ARTÍCULOS 4 Y 35 DE LA LEY N° 19.886"))
+    }
+
     @Test fun aListShowsTheDecisionThatMatched() {
         val node = GraphNode(1, "Fallo", "stc rol 12 158", "STC Rol 12.158")
         val row = TableRow(node, mapOf(

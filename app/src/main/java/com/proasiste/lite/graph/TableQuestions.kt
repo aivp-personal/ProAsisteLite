@@ -143,62 +143,128 @@ object TableQuestions {
     }
 
     /**
-     * "¿Qué resolvió la STC 17.292?": the outcome the rules read in the decision section of the ruling the question names
-     * by its number, with its date and kind, citing the page of the decision. Each decision of the case is given when it
-     * has several (an admissibility resolution and the judgment). Null when the question names no ruling, doesn't ask
-     * what was decided, or the table has no outcome for it: then search answers.
+     * A fact about the ruling a question names, by its number or by its filer, read from that ruling's row: what it
+     * decided ("¿Qué resolvió la STC 17.292?"), when, who filed, which norm was challenged, who dissented, who drafted it,
+     * who sat. Each decision of the case is given when it has several (an admissibility resolution and the judgment).
+     * "¿Qué norma de la Ley de Matrimonio Civil fue impugnada?" names no ruling but a law: the rulings challenging it.
+     * Null when the question asks none of these, names no ruling, or the table has no value for it: then search answers.
      */
     fun decision(question: String, rows: List<TableRow>, english: Boolean): Answer? {
         val folded = " " + Graph.keyOf(question) + " "
-        val asksDate = WHEN.any { folded.contains(it) }
-        if (DECIDED.none { folded.contains(it) } && !asksDate) return null
+        if (REASONS.any { folded.contains(it) }) return null
+        val column = ASKS.firstOrNull { (_, words) -> words.any { folded.contains(it) } }?.first ?: return null
         val number = SameName.caseNumber(question)
-        val named = if (number != null) rows.filter { SameName.caseNumber(it.node.name) == number } else byParty(question, rows)
-        if (asksDate) {
-            val dated = named.filter { it.cells["Fecha"].orEmpty().isNotEmpty() }
-            if (dated.isEmpty()) return null
-            return Answer(dated.mapIndexed { i, r -> "${r.node.name}: ${r.first("Fecha")!!.value} [${i + 1}]" }.joinToString("\n"), dated.map { it to "Fecha" }, emptyList(), null)
+        val named = when {
+            number != null -> rows.filter { SameName.caseNumber(it.node.name) == number }
+            column == NORMS -> byLaw(question, rows).ifEmpty { byParty(question, rows) }
+            else -> byParty(question, rows)
         }
-        val matches = named.filter { it.cells["Resultado"].orEmpty().isNotEmpty() }
+        val matches = named.filter { it.cells[column].orEmpty().isNotEmpty() }
         if (matches.isEmpty()) return null
+        if (column != OUTCOME) {
+            val lines = matches.mapIndexed { i, r ->
+                val values = r.cells.getValue(column).map { it.value }.distinct()
+                val filer = r.first(FILER)?.value?.takeIf { number == null && column != FILER && matches.size > 1 }
+                "${r.node.name}${filer?.let { " ($it)" }.orEmpty()}: ${values.joinToString(if (column == NORMS) "; " else ", ")} [${i + 1}]"
+            }
+            return Answer(lines.joinToString("\n"), matches.map { it to column }, listOf(Filter(column, number ?: matches.joinToString(", ") { it.node.name })), null)
+        }
         val lines = mutableListOf<String>(); val cited = mutableListOf<Pair<TableRow, String?>>()
-        for (r in matches) for (outcome in r.cells.getValue("Resultado").distinctBy { it.sourceId }) {
+        for (r in matches) for (outcome in r.cells.getValue(OUTCOME).distinctBy { it.sourceId }) {
             val focused = r.copy(cells = r.cells.mapValues { (_, cs) -> cs.sortedBy { if (it.sourceId == outcome.sourceId) 0 else 1 } })
-            val date = focused.first("Fecha")?.takeIf { it.sourceId == outcome.sourceId }?.value
+            val date = focused.first(DATE)?.takeIf { it.sourceId == outcome.sourceId }?.value
             val kind = focused.first("Tipo")?.takeIf { it.sourceId == outcome.sourceId }?.value
-            cited += focused to "Resultado"
+            cited += focused to OUTCOME
             lines += "${r.node.name}: ${outcome.value}" + listOfNotNull(kind, date).joinToString(", ", " (", ")").takeIf { kind != null || date != null }.orEmpty() + " [${cited.size}]"
         }
         val head = if (lines.size > 1) (if (english) "${lines.size} decisions:" else "${lines.size} decisiones:") + "\n" else ""
-        return Answer(head + lines.joinToString("\n"), cited, listOf(Filter("Resultado", number ?: matches.joinToString(", ") { it.node.name })), null)
+        return Answer(head + lines.joinToString("\n"), cited, listOf(Filter(OUTCOME, number ?: matches.joinToString(", ") { it.node.name })), null)
     }
-    /** Words that ask when a ruling was given. */
-    private val WHEN = listOf(" cuando se dict", " fecha de la sentencia", " fecha del fallo", " when was")
-    /** Words in company and institution names that don't pick one out. */
-    private val GENERIC = setOf("sociedad", "spa", "ltda", "limitada", "empresa", "empresas", "compania", "servicios", "inversiones", "comercial", "ilustre",
-        "municipalidad", "chile", "nacional", "juez", "jueza", "juzgado", "letras", "tribunal", "corte", "apelaciones", "suplente", "abogado", "presidente", "republica")
+
+    /** Words that ask what was said or why, which only the ruling's text answers: "¿Qué dijo el voto en contra…?" */
+    private val REASONS = listOf(" que dijo", " que dijeron", " que alego", " que alegaron", " que argument", " por que ", " que sostuv", " que razon", " fundament", " what did", " why ")
+
+    private const val OUTCOME = "Resultado"; private const val DATE = "Fecha"; private const val FILER = "Requirente"; private const val NORMS = "Normas impugnadas"
 
     /**
-     * The rows whose filer (Requirente) the question names: "el caso de Salcobrand", "Patricia Quiroz Riffo", "Kimen
-     * Montessori". A filer's distinctive words are those few other filers share, leaving out words like "Sociedad" or
-     * "Municipalidad"; it is named when the question holds two of them, or its only one when that is a long word.
-     * More than ten matches means the words weren't distinctive after all: none.
+     * Which column a question about one ruling asks for, by its words, most specific first: "¿Qué ministros votaron en
+     * contra?" asks for the dissenters, not the judges; "¿El Tribunal acogió…?" for the outcome.
+     */
+    private val ASKS = listOf(
+        "Disidentes" to listOf(" disinti", " disiden", " votaron en contra", " voto en contra", " votaron por acoger", " votaron por rechazar", " dissent"),
+        "Previenen" to listOf(" previn", " previen", " prevencion"),
+        "Redactor" to listOf(" redact", " who wrote", " drafted"),
+        FILER to listOf(" quien present", " quien interpus", " quien dedu", " quien requir", " quien acciono", " quien es el requirente", " quien fue el requirente", " quienes present", " who filed", " filer "),
+        NORMS to listOf(" que norma", " cual norma", " cuales normas", " que precepto", " que articulo", " norma impugnada", " normas impugnadas", " which norm", " which provision"),
+        "Ministros" to listOf(" que ministros", " quienes integr", " integraron", " que jueces", " which judges", " which ministers"),
+        DATE to listOf(" cuando se dict", " fecha de la sentencia", " fecha del fallo", " when was"),
+        OUTCOME to listOf(" resolv", " resuelv", " decid", " decision", " resultado", " outcome", " ruled ", " acog", " rechaz", " fallo de la", " como termin"),
+    )
+
+    /** Words in company, court and institution names that don't pick one out. */
+    private val GENERIC = setOf("sociedad", "spa", "ltda", "limitada", "empresa", "empresas", "compania", "servicios", "inversiones", "comercial", "ilustre",
+        "municipalidad", "chile", "nacional", "juez", "jueza", "juzgado", "letras", "tribunal", "corte", "apelaciones", "suplente", "abogado", "presidente", "republica",
+        "tercer", "primer", "segundo", "cuarto", "quinto", "garantia", "familia", "trabajo", "cobranza", "laboral", "previsional", "civil", "penal", "oral",
+        "requerimiento", "requirente", "sentencia", "caso", "causa", "ministro", "ministros",
+        // Words a question uses for what it asks about, which are also first names ("Norma") or words in company names.
+        "norma", "normas", "ley", "leyes", "articulo", "codigo", "pena", "penas", "derecho", "derechos", "fallo", "recurso", "proceso", "accion", "tribunal")
+
+    /**
+     * The rows whose filer (Requirente) the question names: "el caso de Salcobrand", "David Sepúlveda Cid", "ICH
+     * Ingeniería", "el requerimiento… en Iquique". A filer is named by two of its words in the question, leaving out words
+     * like "Sociedad" or "Juzgado", or by one long word almost no other filer has that the question writes as a name
+     * (capitalised: "Iquique" picks its filer, "tecnología" doesn't pick "Transportes Tecnología Ltda."). Only the filers named by the most words
+     * count, so "David Sepúlveda Cid" doesn't also pick "David Vega Vega". More than ten means the words didn't pick one
+     * out: none.
      */
     fun byParty(question: String, rows: List<TableRow>): List<TableRow> {
         val words = Graph.keyOf(question).split(" ").toSet()
+        // Words the question writes as names ("Iquique", not "tecnología"), leaving out its first word.
+        val capitalised = Regex("\\p{L}+").findAll(question).drop(1).filter { it.value.first().isUpperCase() }.map { Graph.keyOf(it.value) }.toSet()
         fun tokens(v: String) = Graph.keyOf(v).split(" ").filter { it.length >= 3 && it !in GENERIC && it !in setOf("del", "las", "los", "con", "por") && it.none(Char::isDigit) }.toSet()
-        val filers = rows.associateWith { r -> r.values("Requirente").flatMap(::tokens).toSet() }
+        val filers = rows.associateWith { r -> r.values(FILER).flatMap(::tokens).toSet() }
         val df = filers.values.flatten().groupingBy { it }.eachCount()
-        val found = filers.filter { (_, ts) ->
-            val distinctive = ts.filter { (df[it] ?: 0) <= 5 }
-            val hits = distinctive.count { it in words }
-            hits >= 2 || (distinctive.size == 1 && hits == 1 && distinctive.single().length >= 5)
-        }.keys.toList()
+        val hits = filers.mapValues { (_, ts) -> ts.filter { it in words } }.filterValues { h ->
+            h.size >= 2 || (h.size == 1 && h.single().length >= 5 && (df[h.single()] ?: 0) <= 2 && h.single() in capitalised)
+        }
+        val most = hits.values.maxOfOrNull { it.size } ?: return emptyList()
+        val found = hits.filterValues { it.size == most }.keys.toList()
         return if (found.size in 1..10) found else emptyList()
     }
 
-    /** Words that ask what a ruling decided. */
-    private val DECIDED = listOf(" resolv", " resuelv", " decid", " decision", " resultado", " outcome", " ruled ", " acog", " rechaz", " fallo de la", " como termin")
+    /**
+     * The rows challenging the law a question names by its number ("Ley 19.947") or its common name ("Ley de Matrimonio
+     * Civil"), when ten or fewer do.
+     */
+    fun byLaw(question: String, rows: List<TableRow>): List<TableRow> {
+        val folded = " " + Graph.keyOf(question) + " "
+        val numbers = LAW_NUMBER.findAll(question).map { it.groupValues[1].replace(".", "") }.toMutableSet()
+        LAWS.forEach { (number, names) -> if (names.any { folded.contains(" $it ") }) numbers += number }
+        if (numbers.isEmpty()) return emptyList()
+        val found = rows.filter { r -> r.values(NORMS).any { v -> NORM_NUMBER.find(v)?.groupValues?.get(1)?.replace(".", "") in numbers } }
+        return if (found.size in 1..10) found else emptyList()
+    }
+    private val LAW_NUMBER = Regex("\\b(?:ley|dl|dfl|decreto)\\s*(?:n[°º]?\\s*)?(\\d{1,2}\\.?\\d{3})\\b", RegexOption.IGNORE_CASE)
+    private val NORM_NUMBER = Regex("N° ([\\d.]+)")
+
+    /** Laws better known by their name than their number, as a question would call them (folded). */
+    private val LAWS = mapOf(
+        "19947" to listOf("ley de matrimonio civil", "matrimonio civil"),
+        "18290" to listOf("ley de transito"),
+        "18101" to listOf("ley de arrendamiento", "arrendamiento de predios urbanos"),
+        "19886" to listOf("ley de compras publicas", "ley de bases sobre contratos administrativos"),
+        "20285" to listOf("ley de transparencia", "acceso a la informacion publica"),
+        "18216" to listOf("ley de penas sustitutivas", "penas sustitutivas"),
+        "3500" to listOf("sistema de pensiones"),
+        "17322" to listOf("cobranza judicial de cotizaciones"),
+        "20720" to listOf("ley de insolvencia", "ley de reemprendimiento"),
+        "19728" to listOf("seguro de cesantia", "seguro de desempleo"),
+        "17798" to listOf("ley de control de armas", "control de armas"),
+        "20000" to listOf("ley de drogas"),
+        "18695" to listOf("ley organica constitucional de municipalidades", "ley de municipalidades"),
+        "19496" to listOf("ley del consumidor", "proteccion de los derechos de los consumidores"),
+        "20084" to listOf("responsabilidad penal adolescente"),
+    )
 
     const val LIMIT = 40
     /** A number as written, thousands dots included: "18.695", "60". */

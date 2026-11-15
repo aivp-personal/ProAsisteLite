@@ -201,7 +201,7 @@ class RulingSkeleton private constructor(
     }
 
     /** Page 1: the type of action, the requirente, the challenged norms and the pending case. */
-    private class Header(val type: String?, val requirente: String?, val norms: List<String>, val gestion: Pair<String, String?>?) {
+    internal class Header(val type: String?, val requirente: String?, val norms: List<String>, val gestion: Pair<String, String?>?) {
         companion object {
             private val TYPES = listOf(
                 Regex("REQUERIMIENTO\\s+DE\\s+INAPLICABILIDAD", RegexOption.IGNORE_CASE) to "Requerimiento de inaplicabilidad por inconstitucionalidad",
@@ -214,6 +214,8 @@ class RulingSkeleton private constructor(
             private val GESTION = Regex("EN\\s+(?:EL|LA|LOS|LAS)\\s+(?:PROCESO|CAUSA|AUTOS|JUICIO|GESTI[ÓO]N)\\s+(.{3,120}?),?\\s+SEGUID[OA]S?\\s+ANTE\\s+(?:EL|LA)\\s+(.{5,120}?)(?:[,.;]|\\n\\s*\\n|\\s+EN\\s+ACTUAL\\b|\\s+BAJO\\b|\\s+VISTOS\\b|$)", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
             private val ARTICLES = Regex("ART[ÍI]CULOS?\\s+(.+?)\\s+(?:DE\\s+(?:LA|EL|LOS|LAS)|DEL)\\s+(.+)", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
             private val VISTOS = Regex("\\bVISTOS\\b")
+            /** ", NUMERALES 4° Y 5°", ", N° 2)", ", LETRA C)": the numbered or lettered parts of an article. */
+            private val SUBPART = Regex(",?\\s*(NUMERALES|NUMERAL|N[ÚU]MEROS?|N[°º]S?|LETRAS?)\\s*((?:(?:\\d{1,2}(?!\\d)\\s*[°º)]?|[A-Za-z]\\)|[A-Za-z](?=[\\s,]|$))\\s*(?:(?:,|Y|E)\\s*(?=\\d{1,2}(?!\\d)|[A-Za-z][)\\s,]|[A-Za-z]$))?)+)", RegexOption.IGNORE_CASE)
             private val FILER = Regex("VISTOS\\s*:?\\s*(?:Que,?\\s*)?(?:(?:con\\s+)?fecha\\s+\\d{1,2}\\s+de\\s+\\p{L}+(?:\\s+de)?\\s+\\d{4},?\\s*)?(.{3,200}?),?\\s+(?:acciona|deduce|dedujo|interpone|interpuso|requiere|requirió|formula|formuló|presenta|presentó|ha\\s+(?:deducido|interpuesto|presentado|formulado|requerido|accionado)|solicita|solicitó)\\b", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
             private val GESTION_START = Regex("\\bEN\\s+(?:EL|LA|LOS|LAS)\\s+(?:PROCESO|CAUSA|AUTOS|JUICIO|GESTI[ÓO]N)\\b", RegexOption.IGNORE_CASE)
             private val ARTICLE = Regex("(\\d{1,4})\\s*(BIS|TER|QU[ÁA]TER|QUINQUIES)?(?:,?\\s*INCISOS?\\s+((?:\\w+\\s*(?:,|Y|E)?\\s*)+?)(?=,|\\s+N[°º]|\\s+LETRA|\\s+SEGUNDA|\\s+PRIMERA|\\s+PARTE|$|\\s+DE\\b))?", RegexOption.IGNORE_CASE)
@@ -232,9 +234,7 @@ class RulingSkeleton private constructor(
                 if (blocks.size < 2) {
                     val end = listOfNotNull(GESTION_START.find(rest)?.range?.first, VISTOS.find(rest)?.range?.first).minOrNull() ?: rest.length
                     caption = rest.substring(0, end)
-                    requirente = FILER.find(first)?.groupValues?.get(1)?.replace(Regex("\\s+"), " ")?.trim()?.trimEnd(',')
-                        ?.replace(Regex("^(?:don|doña|el|la)\\s+", RegexOption.IGNORE_CASE), "")?.takeIf { it.length >= 3 }
-                        ?.let { if (it == it.uppercase()) Names.titleCase(it) else it }
+                    requirente = FILER.find(first)?.groupValues?.get(1)?.let { Names.filer(it) }
                 }
                 val gestion = GESTION.find(rest)?.let { m ->
                     val id = m.groupValues[1].replace(Regex("\\s+"), " ").trim().trimEnd(',')
@@ -250,11 +250,22 @@ class RulingSkeleton private constructor(
                 return scope.split(";").mapNotNull { segment ->
                     val m = ARTICLES.find(segment) ?: return@mapNotNull null
                     val body = Norms.body(m.groupValues[2]) ?: return@mapNotNull null
-                    val list = m.groupValues[1].replace(Regex(",?\\s*(?:SEGUNDA|PRIMERA|TERCERA)\\s+PARTE", RegexOption.IGNORE_CASE), "")
+                    var list = m.groupValues[1].replace(Regex(",?\\s*(?:SEGUNDA|PRIMERA|TERCERA)\\s+PARTE", RegexOption.IGNORE_CASE), "")
+                    // "358, NUMERALES 4° Y 5°" and "46, LETRA C)" are parts of one article, not articles 4 and 5: each
+                    // becomes a marker without digits ("§a§") that the article before it picks up.
+                    val parts = mutableListOf<String>()
+                    list = SUBPART.replace(list) { p ->
+                        val items = Regex("\\d{1,3}|\\b[A-Za-z]\\b").findAll(p.groupValues[2]).map { it.value.lowercase() }.filter { it != "y" && it != "e" }.toList()
+                        if (items.isEmpty()) "" else {
+                            parts += (if (p.groupValues[1].uppercase().startsWith("LETRA")) " letra " else " N° ") + items.joinToString(" y ")
+                            "§${'a' + parts.size - 1}§"
+                        }
+                    }
                     ARTICLE.findAll(list).map { a ->
                         val suffix = a.groupValues[2].takeIf { it.isNotEmpty() }?.let { " ${it.lowercase()}" } ?: ""
                         val incisos = a.groupValues[3].takeIf { it.isNotBlank() }?.let { Norms.incisos(it) } ?: ""
-                        "$body, art. ${a.groupValues[1]}$suffix$incisos"
+                        val part = Regex("^[°º]?\\s*§([a-z])§").find(list.substring(a.range.last + 1))?.let { parts[it.groupValues[1][0] - 'a'] } ?: ""
+                        "$body, art. ${a.groupValues[1]}$suffix$part$incisos"
                     }.toList()
                 }.flatten().distinct()
             }
@@ -265,12 +276,16 @@ class RulingSkeleton private constructor(
         private val ORDINALS = mapOf("primero" to 1, "segundo" to 2, "tercero" to 3, "cuarto" to 4, "quinto" to 5, "sexto" to 6, "septimo" to 7, "octavo" to 8, "noveno" to 9,
             "decimo" to 10, "undecimo" to 11, "duodecimo" to 12, "final" to -1)
 
+        private val CODE = Regex("C[ÓO]DIGO\\s+(DE\\s+PROCEDIMIENTO\\s+CIVIL|DE\\s+PROCEDIMIENTO\\s+PENAL|PROCESAL\\s+PENAL|ORG[ÁA]NICO\\s+DE\\s+TRIBUNALES|DEL?\\s+TRABAJO|DE\\s+COMERCIO|DE\\s+AGUAS|DE\\s+MINER[ÍI]A|DE\\s+JUSTICIA\\s+MILITAR|DE\\s+DERECHO\\s+INTERNACIONAL\\s+PRIVADO|CIVIL|PENAL|TRIBUTARIO|SANITARIO|AERON[ÁA]UTICO)\\b", RegexOption.IGNORE_CASE)
+
         /** "LA LEY N° 18.695, ORGÁNICA CONSTITUCIONAL DE MUNICIPALIDADES" → "Ley N° 18.695"; "CÓDIGO DEL TRABAJO" → "Código del Trabajo". */
         fun body(raw: String): String? {
             val t = raw.replace(Regex("\\s+"), " ").trim()
             Regex("LEY\\s*N?[°º]?\\s*([\\d.]+)", RegexOption.IGNORE_CASE).find(t)?.let { return "Ley N° ${dotted(it.groupValues[1])}" }
             Regex("(?:D\\.?\\s?F\\.?\\s?L\\.?|DECRETO\\s+CON\\s+FUERZA\\s+DE\\s+LEY)\\s*N?[°º]?\\s*([\\d.]+)", RegexOption.IGNORE_CASE).find(t)?.let { return "DFL N° ${dotted(it.groupValues[1])}" }
             Regex("(?:D\\.?\\s?L\\.?|DECRETO\\s+LEY)\\s*N?[°º]?\\s*([\\d.]+)", RegexOption.IGNORE_CASE).find(t)?.let { return "DL N° ${dotted(it.groupValues[1])}" }
+            // A known code's name ends where the name ends: the caption may run straight into the filer's name.
+            CODE.find(t)?.let { return Names.titleCase("CÓDIGO " + it.groupValues[1].replace(Regex("\\s+"), " ").uppercase().replace("DE TRABAJO", "DEL TRABAJO")) }
             Regex("C[ÓO]DIGO\\s+(?:DE\\s+|DEL\\s+)?[A-ZÁÉÍÓÚÑ ]+?(?=[,;.(]|\\s+EN\\s|$)", RegexOption.IGNORE_CASE).find(t)?.let { return Names.titleCase(it.value.trim()) }
             if (Regex("CONSTITUCI[ÓO]N", RegexOption.IGNORE_CASE).containsMatchIn(t)) return "Constitución"
             Regex("LEY\\s+(?:ORG[ÁA]NICA\\s+CONSTITUCIONAL\\s+)?(?:DE\\s+|DEL\\s+)?[A-ZÁÉÍÓÚÑ ]{4,}?(?=[,;.(]|$)", RegexOption.IGNORE_CASE).find(t)?.let { return Names.titleCase(it.value.trim()) }
@@ -308,6 +323,25 @@ class RulingSkeleton private constructor(
             if (words.size !in 2..7) return false
             if (words.any { fold(it).trim('.', ',') in NOT_NAME_WORDS }) return false
             return words.all { w -> fold(w) in PARTICLES || w.first().isUpperCase() }
+        }
+
+        /** What a ruling says before naming its filer: "Y CONSIDERANDO: 1°. Que,", "Introducción A fojas 1,", "con fecha 13 de enero de 2025,". */
+        private val FILER_LEAD = Regex("^[^,]{0,80}?(?:\\bQue\\s*,|\\bfojas\\s*\\d+(?:\\s*y\\s*\\d+)?\\s*,|\\bfecha\\s+[^,]{3,60}?(?:\\d{4}|\\bmil(?:\\s+(?!de\\b)\\p{L}+){0,2})\\s*,?|\\bSolicitud(?:\\s+de\\s+inaplicabilidad)?\\s*\\.)\\s*", RegexOption.IGNORE_CASE)
+        private val FILER_TITLE = Regex("^(?:['\"‘’]\\s*)?(?:(?:el|la|los|las|don|doña|señor|señora|sr\\.|sra\\.|abogad[oa]|requirente)\\s+)+", RegexOption.IGNORE_CASE)
+        private val FILER_TAIL = Regex("\\s*(?:,\\s*con\\s+fecha\\b|,?\\s*-?\\s*en\\s+adelante\\b|,\\s*por\\s+s[ií]\\b|,?\\s*(?:representad[oa]s?|en\\s+presentaci[óo]n)\\b).*$", RegexOption.IGNORE_CASE)
+
+        /**
+         * A filer's name as VISTOS gives it, without what comes before it ("Y CONSIDERANDO: 1°. Que, con fecha 13 de enero
+         * de 2025, la Compañía Minera Manto de Oro" → "Compañía Minera Manto de Oro") or after it (", con fecha…", "-en
+         * adelante…"). Null when nothing like a name is left.
+         */
+        fun filer(raw: String): String? {
+            var s = raw.replace(Regex("\\s+"), " ").trim()
+            while (true) { val m = FILER_LEAD.find(s) ?: break; s = s.substring(m.range.last + 1) }
+            s = s.replace(FILER_TITLE, "").replace(FILER_TAIL, "").trim().trimEnd(',', ';', ' ')
+            if (s.endsWith(".") && !Regex("\\b\\p{L}\\.$").containsMatchIn(s)) s = s.dropLast(1)  // "S.A." keeps its dot
+            if (s.length < 3 || !s.first().isLetter() || !s.contains(' ') && s.length < 5) return null
+            return if (s == s.uppercase()) titleCase(s) else s
         }
 
         /** "MARIO MEZA VÁSQUEZ" → "Mario Meza Vásquez"; keeps acronyms such as "S.A." and "ICH". */
