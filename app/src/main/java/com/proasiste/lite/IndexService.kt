@@ -102,7 +102,10 @@ class IndexService:Service(){
                 if(s!=null&&modelReady){
                     publish(store,tags,projects,done,s.title,Phase.INDEX,indexed+failed+scans)
                     // A file that came in an indexed pack already has its chunks: no model needed.
-                    try{val e=store.prebuilt(s)?:engine.encode(s);store.saveChunks(s,e.chunks,e.pages,e.noTextPages);store.dropPrebuilt(s);indexed++}
+                    try{val e=store.prebuilt(s)?:engine.encode(s);store.saveChunks(s,e.chunks,e.pages,e.noTextPages);store.dropPrebuilt(s)
+                        // Column values the pack brought for this file (its rulings table row) go in with it.
+                        runCatching{com.proasiste.lite.graph.GraphColumns(store,com.proasiste.lite.graph.Graph(store)).applyPrebuilt(s.building)}
+                        indexed++}
                     catch(e:Engine.NeedsOcr){store.markNeedsOcr(s.id,e.pages,e.message?:"");scans++}
                     catch(e:Exception){store.error(s.id,e.message?:tr("Could not process source","No se pudo procesar la fuente"));failed++}
                     done++;continue

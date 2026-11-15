@@ -163,7 +163,10 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
      * why. Files whose chunks aren't all embedded are left out and get indexed on the phone as usual. Returns how many
      * files came ready.
      */
-    fun importPrebuilt(pack:File):Int{
+    /** What a pack brought: files with a ready-made index, and files with column values. */
+    data class PackLoad(val files:Int,val valueFiles:Int)
+    fun importPrebuilt(pack:File):Int=importPack(pack).files
+    fun importPack(pack:File):PackLoad{
         SQLiteDatabase.openDatabase(pack.path,null,SQLiteDatabase.OPEN_READONLY).use{p->
             fun meta(name:String)=p.rawQuery("SELECT value FROM meta WHERE name=?",arrayOf(name)).use{if(it.moveToFirst())it.getString(0) else ""}
             require(meta("index_version")==GemmaEmbedder.INDEX_VERSION){tr("This pack was indexed for another version of the app (${meta("index_version").take(60)}). Make it again.","Este paquete se indexó para otra versión de la app (${meta("index_version").take(60)}). Vuelve a crearlo.")}
@@ -172,12 +175,18 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
         val db=writableDatabase
         db.execSQL("ATTACH DATABASE ? AS pack",arrayOf(pack.path))
         try{
-            return db.inTransaction{
+            val hasValues=db.rawQuery("SELECT 1 FROM pack.sqlite_master WHERE type='table' AND name='values'",null).use{it.moveToFirst()}
+            val valueFiles=if(!hasValues)0 else db.inTransaction{
+                execSQL("DELETE FROM prebuilt_values WHERE sha256 IN (SELECT DISTINCT sha256 FROM pack.\"values\")")
+                execSQL("INSERT INTO prebuilt_values(sha256,type,name,col,value,page,origin) SELECT sha256,type,name,col,value,page,origin FROM pack.\"values\"")
+                rawQuery("SELECT COUNT(DISTINCT sha256) FROM pack.\"values\"",null).use{it.moveToFirst();it.getInt(0)}
+            }
+            return PackLoad(db.inTransaction{
                 val ready="SELECT f.sha256 FROM pack.files f WHERE f.error='' AND EXISTS (SELECT 1 FROM pack.chunks c WHERE c.sha256=f.sha256) AND NOT EXISTS (SELECT 1 FROM pack.chunks c WHERE c.sha256=f.sha256 AND (c.vector IS NULL OR length(c.vector)<>${DIMENSIONS*4}))"
                 execSQL("INSERT OR REPLACE INTO prebuilt_files(sha256,pages,no_text_pages) SELECT sha256,pages,no_text_pages FROM pack.files WHERE sha256 IN ($ready)")
                 execSQL("INSERT OR REPLACE INTO prebuilt_chunks(sha256,ordinal,page,start_ms,text,vector) SELECT sha256,ordinal,page,start_ms,text,vector FROM pack.chunks WHERE sha256 IN ($ready)")
                 rawQuery("SELECT COUNT(*) FROM ($ready)",null).use{it.moveToFirst();it.getInt(0)}
-            }
+            },valueFiles)
         }finally{db.execSQL("DETACH DATABASE pack")}
     }
     /** [s]'s chunks from an indexed pack, when its contents match one; null to index it with the model. */
@@ -458,6 +467,12 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
                 "CREATE TABLE history(id INTEGER PRIMARY KEY,building TEXT NOT NULL,question TEXT NOT NULL,answer TEXT NOT NULL,writer TEXT NOT NULL,sources TEXT NOT NULL,opened TEXT NOT NULL DEFAULT '',report_id INTEGER,created INTEGER NOT NULL)",
                 "CREATE INDEX history_building ON history(building,created)",
                 "CREATE TABLE memories(id INTEGER PRIMARY KEY,building TEXT,kind TEXT NOT NULL,text TEXT NOT NULL,created INTEGER NOT NULL)",
+            ),
+            // 16: column values made on a computer (a pack's `values` table: the rulings table read with the app's own
+            // rules), waiting for the file with that SHA-256 to be in a project. Applied as soon as it is, then dropped.
+            listOf(
+                "CREATE TABLE prebuilt_values(sha256 TEXT NOT NULL,type TEXT NOT NULL,name TEXT NOT NULL,col TEXT NOT NULL,value TEXT NOT NULL,page INTEGER NOT NULL,origin TEXT NOT NULL)",
+                "CREATE INDEX prebuilt_values_sha ON prebuilt_values(sha256)",
             ),
         )
         private val SOURCE_COLUMNS=arrayOf("id","path","type","building","asset","date","title","synthetic","indexed","error","pages","no_text_pages")

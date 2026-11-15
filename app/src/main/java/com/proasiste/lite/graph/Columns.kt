@@ -92,6 +92,28 @@ class GraphColumns(private val store: Store, private val graph: Graph) {
         }
     }
 
+    /**
+     * Applies column values a pack brought (`prebuilt_values`) to every file of [project] with the same contents, as
+     * their writer would have (the rules' values replace the rules' values), then drops them. Returns how many files got values.
+     */
+    fun applyPrebuilt(project: String): Int {
+        val pending = db.rawQuery("SELECT COUNT(*) FROM prebuilt_values", null).use { it.moveToFirst(); it.getInt(0) }
+        if (pending == 0) return 0
+        val rows = db.rawQuery(
+            """SELECT s.id, v.sha256, v.type, v.name, v.col, v.value, v.page, v.origin FROM prebuilt_values v JOIN sources s ON s.sha256 = v.sha256
+               WHERE s.building = ? ORDER BY s.id, v.rowid""", arrayOf(project),
+        ).use { c -> buildList { while (c.moveToNext()) add(listOf(c.getString(0), c.getString(1), c.getString(2), c.getString(3), c.getString(4), c.getString(5), c.getInt(6).toString(), c.getString(7))) } }
+        val bySource = rows.groupBy { it[0] }
+        for ((sourceId, vs) in bySource) {
+            val (type, name, origin) = Triple(vs[0][2], vs[0][3], vs[0][7])
+            val defs = if (type == com.proasiste.lite.runtime.RulingColumns.TYPE) com.proasiste.lite.runtime.RulingColumns.DEFS else vs.map { it[4] }.distinct().map { ColumnDef(it, ColumnKind.TEXT) }
+            replace(project, sourceId, origin, type, name, defs, vs.map { NewValue(it[4], it[5], it[6].toInt()) })
+        }
+        val applied = rows.map { it[1] }.distinct()
+        db.inTransaction { applied.forEach { delete("prebuilt_values", "sha256 = ?", arrayOf(it)) } }
+        return bySource.size
+    }
+
     /** Every node of [type] in [project] that has values, with its values in file and page order. */
     fun rows(project: String, type: String, links: Boolean = true): List<TableRow> {
         val byNode = LinkedHashMap<Long, Pair<GraphNode, LinkedHashMap<String, MutableList<Cell>>>>()

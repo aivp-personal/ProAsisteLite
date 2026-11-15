@@ -29,6 +29,8 @@ class RulingSkeleton private constructor(
     val outcome: String? = null,
     /** Who filed the action, from the header or VISTOS; null for a preventive control, which has no filer. */
     val filer: String? = null,
+    /** The date it was given, as ISO (2026-09-02), checked against its filing ([RulingDate]); null when none passes. */
+    val date: String? = null,
 ) {
     class Vote(val name: String, val kind: String, val sense: String, val ministers: List<String>, val firstPage: Int, val lastPage: Int, val text: String)
 
@@ -57,7 +59,8 @@ class RulingSkeleton private constructor(
 
             // ---- Header: date, type, requirente, challenged norms, pending case ----
             val tribunal = court.tribunal
-            DATE.find(first)?.let { facts += fact(1, "Tribunal", tribunal, "DICTA", "Fallo", ruling, "El $tribunal dictó $ruling el ${it.groupValues[1]}.") }
+            val dated = RulingDate.find(pages, ruling)
+            dated?.let { facts += fact(it.page, "Tribunal", tribunal, "DICTA", "Fallo", ruling, "El $tribunal dictó $ruling el ${it.text}.") }
             val header = Header.of(first)
             header.type?.let { facts += fact(1, "Fallo", ruling, "TIPO", "Concepto", it, "$ruling resuelve un ${it.lowercase()}.") }
             val requirente = header.requirente
@@ -166,7 +169,7 @@ class RulingSkeleton private constructor(
             knownRulings += Citations.allRoles(doc.text, court, ruling)
             known += ministers.map { "Ministro" to it }
             known += knownRulings.map { "Fallo" to it }
-            return RulingSkeleton(ruling, court, facts.distinctBy { listOf(it.subject, it.relation, it.obj, it.statement) }, ministers, knownRulings, known.distinct(), votes, outcome, requirente)
+            return RulingSkeleton(ruling, court, facts.distinctBy { listOf(it.subject, it.relation, it.obj, it.statement) }, ministers, knownRulings, known.distinct(), votes, outcome, requirente, dated?.iso)
         }
 
         private fun fact(page: Int, st: String, s: String, rel: String, ot: String, o: String, statement: String) =

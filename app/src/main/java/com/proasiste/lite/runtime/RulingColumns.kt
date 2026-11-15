@@ -36,7 +36,7 @@ object RulingColumns {
         val s = RulingSkeleton.of(pages, title) ?: return null
         val f = s.facts
         val out = mutableListOf<NewValue>()
-        f.firstOrNull { it.relation == "DICTA" }?.let { d -> isoDate(d.statement)?.let { out += NewValue(DATE, it, d.page) } }
+        s.date?.let { iso -> out += NewValue(DATE, iso, f.firstOrNull { it.relation == "DICTA" }?.page ?: 1) }
         f.firstOrNull { it.relation == "TIPO" }?.let { out += NewValue(KIND, it.obj, it.page) }
         s.outcome?.let { o -> out += NewValue(OUTCOME, o, f.firstOrNull { it.relation == "RESUELVE" }?.page ?: 1) }
         s.filer?.let { out += NewValue(FILER, it, 1) }

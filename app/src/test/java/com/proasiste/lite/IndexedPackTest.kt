@@ -78,6 +78,25 @@ class IndexedPackTest {
         assertEquals(0, store.prebuiltCount())
     }
 
+    @Test fun columnValuesFromAPackReachFilesAlreadyInAndFilesStillToCome() {
+        val f = pack()
+        SQLiteDatabase.openDatabase(f.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.execSQL("CREATE TABLE \"values\"(sha256 TEXT NOT NULL, type TEXT NOT NULL, name TEXT NOT NULL, col TEXT NOT NULL, value TEXT NOT NULL, page INTEGER NOT NULL, origin TEXT NOT NULL)")
+            for ((sha, rol) in listOf("x" to "STC Rol 17.292", "y" to "STC Rol 17.221"))
+                for ((col, v) in listOf("Fecha" to "2026-09-02", "Resultado" to "Rechazado")) db.execSQL("INSERT INTO \"values\" VALUES (?, 'Fallo', ?, ?, ?, 9, 'reglas')", arrayOf(sha, rol, col, v))
+        }
+        val graph = com.proasiste.lite.graph.Graph(store); val columns = com.proasiste.lite.graph.GraphColumns(store, graph)
+        source("S1", "x")  // already in the project
+        assertEquals(Store.PackLoad(1, 2), store.importPack(f))
+        assertEquals(1, columns.applyPrebuilt("P05"))
+        assertEquals(listOf("STC Rol 17.292"), columns.rows("P05", "Fallo").map { it.node.name })
+        assertEquals(listOf("Rechazado"), columns.rows("P05", "Fallo").single().values("Resultado"))
+        source("S2", "y")  // arrives later, as when it is indexed
+        assertEquals(1, columns.applyPrebuilt("P05"))
+        assertEquals(setOf("STC Rol 17.292", "STC Rol 17.221"), columns.rows("P05", "Fallo").map { it.node.name }.toSet())
+        assertEquals(0, columns.applyPrebuilt("P05"))
+    }
+
     @Test fun schemaTwelveUpgrades() {
         val name = "pack-upgrade.db"
         context.deleteDatabase(name)

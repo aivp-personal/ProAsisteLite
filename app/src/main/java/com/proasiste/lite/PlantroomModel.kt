@@ -634,15 +634,21 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         val building=state.buildingId
         appContext.contentResolver.takePersistableUriPermission(tree,android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
         // An indexed pack: its ready-made index is loaded before the files are queued, so none is embedded twice.
-        val ready=withContext(Dispatchers.IO){FolderImport.topFile(appContext,tree,Store.PACK_DB)?.let{uri->
+        val pack=withContext(Dispatchers.IO){FolderImport.topFile(appContext,tree,Store.PACK_DB)?.let{uri->
             state=state.copy(status=tr("Loading the pack's index","Cargando el índice del paquete"))
             val copy=File(appContext.cacheDir,Store.PACK_DB)
-            try{appContext.contentResolver.openInputStream(uri)!!.use{input->copy.outputStream().use{input.copyTo(it,1 shl 20)}};store.importPrebuilt(copy)}finally{copy.delete()}
+            try{appContext.contentResolver.openInputStream(uri)!!.use{input->copy.outputStream().use{input.copyTo(it,1 shl 20)}};store.importPack(copy)}finally{copy.delete()}
         }}
+        // Column values for files already in the project go in now; the others' go in as each is indexed.
+        val valued=if((pack?.valueFiles?:0)>0)withContext(worker){columns.applyPrebuilt(building)} else 0
         val (found,added)=withContext(Dispatchers.IO){val files=FolderImport.walk(appContext,tree);files.size to store.enqueue(building,files)}
+        if(found==0&&pack!=null&&pack.valueFiles>0){
+            state=state.copy(query="",isSearching=false,searchMillis=null,status=tr("Rulings table: $valued files got their columns from the pack. Nothing left this phone.","Tabla de fallos: $valued archivos recibieron sus columnas del paquete. Nada salió de este teléfono."))
+            return@task
+        }
         check(found>0){tr("No PDFs, photos or recordings in that folder.","No hay PDF, fotos ni grabaciones en esa carpeta.")}
         IndexService.start(appContext,building)
-        val packNote=ready?.let{tr(" · $it come with their index ready"," · $it vienen con su índice listo")}.orEmpty()
+        val packNote=pack?.let{p->tr(" · ${p.files} come with their index ready"," · ${p.files} vienen con su índice listo")+(if(valued>0)tr(" · $valued already here got their columns"," · $valued ya presentes recibieron sus columnas") else "")}.orEmpty()
         state=state.copy(query="",isSearching=false,searchMillis=null,status=tr("$found files found, $added new$packNote · importing and indexing in the background. You can keep using the app.","$found archivos encontrados, $added nuevos$packNote · se importan e indexan en segundo plano. Puedes seguir usando la app."))
     }
     fun importFiles(uris:List<Uri>)=task(tr("Importing files", "Importando archivos")){
