@@ -71,6 +71,15 @@ internal fun ActionsSheet(state: UiState, actions: UiActions, onClose: () -> Uni
             Column(Modifier.padding(horizontal = 24.dp)) {
                 Eyebrow(tr("NEW SKILL · YOUR OWN ACTION, FOR EVERY PROJECT", "NUEVA HABILIDAD · TU PROPIA ACCIÓN, PARA TODOS LOS PROYECTOS"))
                 var name by remember { mutableStateOf("") }; var instructions by remember { mutableStateOf("") }
+                // Requests asked again and again: offered as a skill, drafted from the person's own words to edit first.
+                state.habits.take(3).forEach { h ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("plantroom.habit")) {
+                        Text(tr("You've asked this several times: “$h”", "Has preguntado esto varias veces: «$h»"), color = Mist, fontSize = 12.sp, lineHeight = 17.sp)
+                        TextButton(onClick = { name = h.split(Regex("\\s+")).take(5).joinToString(" ").trimEnd('?', '.', ','); instructions = h }, enabled = !locked) {
+                            Text(tr("Make it a skill", "Convertirlo en habilidad"), color = Gold, fontSize = 12.sp)
+                        }
+                    }
+                }
                 OutlinedTextField(value = name, onValueChange = { name = it.take(60) }, singleLine = true, enabled = !locked, label = { Text(tr("Name", "Nombre")) },
                     placeholder = { Text(tr("Votes and dissents", "Votos y disidencias"), color = Muted, fontSize = 13.sp) },
                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp).testTag("plantroom.skill-name"), shape = RoundedCornerShape(12.dp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Gold, unfocusedBorderColor = Line))

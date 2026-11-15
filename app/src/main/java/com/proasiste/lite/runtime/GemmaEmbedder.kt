@@ -76,9 +76,19 @@ class GemmaEmbedder(context: Context) : AutoCloseable {
         requireWorkerThread()
         require(text.isNotBlank()) { tr("Enter some text to search.", "Escribe algo para buscar.") }
         // Official model-card asymmetric retrieval instructions; images/audio get no prefix.
-        val input = if (isQuery) "task: question answering | query: ${text.trim()}"
-                    else "title: none | text: ${text.trim()}"
-        return vector(requireEngine().embedText(input))
+        val prefix = if (isQuery) "task: question answering | query: " else "title: none | text: "
+        // A piece over the model's 512 tokens (a long table row, a run of symbols) is embedded from its first 85% of
+        // words, again until it fits, instead of failing its whole file. desktop/embed_pack.py uses the same rule.
+        var t = text.trim()
+        repeat(12) {
+            try { return vector(requireEngine().embedText(prefix + t)) }
+            catch (e: Exception) {
+                if (e.message?.contains("exceeds maximum supported") != true) throw e
+                val words = t.split(Regex("\\s+"))
+                t = words.take(maxOf(1, (words.size * 0.85).toInt())).joinToString(" ")
+            }
+        }
+        error("A piece is still too long for the model after cutting it down.")
     }
 
     @Synchronized

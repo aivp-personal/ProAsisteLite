@@ -13,8 +13,8 @@ ProAsisteLocal (`com.plantroom.pocket`) loads every chunk to search, which break
 | 4 | DocLang reader, then graph tables the user guides | **Done** (2026-11-14) |
 | 5 | Skills and actions on files, saved reports and decisions | **Done** (2026-11-14) |
 | 6 | Google Drive connection: index files where they live | Planned |
-| 7 | Tables in the graph: columns on types, imported spreadsheets, counting questions | Planned |
-| 8 | Memory: what you asked, what you prefer, what you do often | Planned |
+| 7 | Tables in the graph: columns on types, imported spreadsheets, counting questions | **Built** (2026-11-15) |
+| 8 | Memory: what you asked, what you prefer, what you do often | **Built** (2026-11-15) |
 
 ## 1. Getting thousands of files in — done
 
@@ -261,6 +261,21 @@ answers, with each row openable. The card says which table answered. Optionally,
 writes a read-only query for questions the patterns don't cover; it sees the question and the table layout, never the
 data. Never in incognito projects, never with Gemini Nano.
 
+**Built (2026-11-15): 7a for rulings, and 7c.** Schema 12 adds `graph_values` (a value per node, column, file and
+writer; nodes with values survive graph rebuilds; merges carry them). Graph types can declare columns (`ColumnDef`:
+text, number, date, yes/no, list), kept in the schema JSON; a ruling has ten built in (`RulingColumns`): Fecha, Tipo,
+Resultado, Requirente, Gestión, Normas impugnadas, Ministros, Redactor, Disidentes, Previenen. Library → Rulings table →
+Read from files reads them with the skeleton, on the phone, no model. Measured on P04's 173 rulings (copied from the
+phone): type 172, date 168, outcome 164, filer 146 (the 11 preventive controls have none), case 140, norms 132,
+judges 173, drafter 95. Getting there fixed the skeleton on DocLang text, which has no blank lines between header
+parts: the filer now comes from VISTOS when needed (was 0 of 173, so norms and case were 0 too), SE DECLARA is read for
+preventive controls, and unnumbered or stamp-interrupted decided points are found. A question that counts, lists or
+groups rulings ("¿cuántos fallos fueron rechazados?", "¿en qué fallos disintió Silva?", "fallos por resultado",
+"¿qué fallos impugnan el art. 60 de la ley 18.695?") is answered from the columns before search, each row citing its
+page; the card says "counted from the rulings table". Checked on the Fold with P04's two rulings. Not yet: columns
+for My types filled by the model, link columns, a row's values on the graph screen, saving the table, and P04's 173
+rulings in this app (they are in ProAsisteLocal only).
+
 **7d. Likely duplicates.** Names that probably mean the same, found by rules (case, accents, "Rol 17.292-25" and
 "17292-2025") and by similarity with EmbeddingGemma on the phone, offered for the user to confirm with Merge names.
 Nothing merges on its own until a merge can be undone.
@@ -318,3 +333,45 @@ budget met on P04; then the golden set again, so memory doesn't make answers wor
 
 Not in this step: memories the app saves without your yes; memories shared between people or phones; anything from
 one project reaching another except shared knowledge you added.
+
+## After the plan: indexed packs (2026-11-15)
+
+**Built.** A large folder can be indexed on the computer and searched on the phone. `DesktopPackBuild` (a JVM run of the
+app's own `Engine.pdfPieces`) reads and splits each PDF; `desktop/embed_pack.py` embeds the pieces with the app's model
+file through MediaPipe on the CPU (cosine 0.9995+ to the phone's own vectors; the Hugging Face weights are not
+interchangeable at ~0.985). Both write `proasiste-index.db` beside the PDFs. On the phone, Import a folder loads it first
+(schema 13: `prebuilt_files`, `prebuilt_chunks`, keyed by SHA-256, refused for another index version or model), and the
+background indexer takes a matching file's chunks from it instead of the model. Checked on the Fold: 20 of Dr. García's
+rulings (1,317 pages) read in 5 s and embedded in 2 min here, indexed in seconds there, chunks and vectors identical,
+search and a Nano answer working. How to make one: `desktop/README.md`. Dr. García's whole folder (2,764 PDFs) would take
+about 5 min to read and about 2 h to embed.
+
+## Steps 7 and 8 finished (2026-11-15)
+
+**7, the rest.** 7a: Graph types declare columns per type (text, number, date, yes/no, list); the graph build asks
+the model for their values, kept only when the page shows them (a date's year and day, a number's digits, most of a
+text's words); relations become list columns ("CITA_PRECEDENTE →", "← INTEGRA", left out above 8 names a node on
+average); a name's values show on the graph screen. 7b (schema 14, `table_maps`): Add evidence → Import a table reads
+CSV (delimiter found by counting) and .xlsx (no library: shared strings, date styles, saved formula values, merged
+cells; .xls and protected files refused); the app proposes a mapping (type joined to the graph's names when a column
+matches them, name column, kinds, links) for the person to confirm, checks every cell first, keeps the file as a source
+of type "table", and re-syncs on a second import (changed rows update, new arrive, removed go; a node a document still
+mentions stays). Rows spelled another way join the graph's name ("Daniela Marzi Muñoz" → "Daniela Beatriz Marzi
+Muñoz"). Tables save as .xlsx. 7d: "Same name?" on the graph screen pairs names spelled two ways (same first name and
+both surnames, or the same case number), each merged only on a yes. Checked on the Fold: the Tribunal's list of 39
+ministers imported as a Ministro table.
+
+**8 (schema 15, `history`, `memories`).** 8a: every answer is kept with its question, writer, sources, sources opened
+and the report it became; Library → History searches, reopens (sources highlighted as before) and deletes; nothing kept
+for incognito projects. 8b: Library → Notes keeps preferences and facts, for this project or all projects; they go in
+the answer prompt as the user's notes, after the rules and never numbered, so never cited; a question with an
+instruction ("en máximo 3 líneas", "responde en español", "always …") offers to keep it. 8c: a request asked three
+times (same words without names and numbers) is offered in Actions as a skill, drafted from the question. 8d: notes for
+all projects are read by every project; an incognito project can't add or change them. 8e: every search logs where its
+time goes (`ProAsisteTiming`) and shows it: on the Fold, P93 (11,669 pieces) took 177 ms before writing (question 121,
+search 50) once warm, 1,319 ms on the first search after start (loading the index); the one-second budget holds when
+warm. Checked on the Fold: a suggested note kept, then "1 of your notes went with the question", History and Notes.
+
+**Also:** a piece over the model's 512 tokens is embedded from its first 85% of words until it fits, on the phone and in
+`desktop/embed_pack.py` alike; before, it failed its whole file. Not yet: semantic name matching with EmbeddingGemma for
+7d, model-written queries for 7c, the cold first search.

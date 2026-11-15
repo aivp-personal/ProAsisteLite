@@ -1,11 +1,12 @@
 package com.proasiste.lite.graph
 
 import com.proasiste.lite.runtime.LegalFacts
+import com.proasiste.lite.runtime.RulingColumns
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** A kind of node the graph may hold, with what it means. */
-data class NodeType(val name: String, val description: String = "")
+/** A kind of node the graph may hold, with what it means and the columns each of its nodes may have. */
+data class NodeType(val name: String, val description: String = "", val columns: List<ColumnDef> = emptyList())
 /** A kind of link, with what it means and the node types it may run from and to. */
 data class LinkType(val name: String, val description: String = "", val from: Set<String>, val to: Set<String>)
 
@@ -31,11 +32,22 @@ data class GraphSchema(val mode: String = AUTO, val nodes: List<NodeType> = empt
     /** A schema can be used to extract only with at least one type and one link, and links naming known types. */
     fun complete(): Boolean = !custom || (nodes.isNotEmpty() && links.isNotEmpty() && links.all { l -> (l.from + l.to).all { t -> nodes.any { it.name == t } } })
 
+    /**
+     * The columns nodes of [type] have. In Automatic mode a ruling has the legal columns the rules read; in My types,
+     * whatever the type declares.
+     */
+    fun columnsOf(type: String): List<ColumnDef> =
+        if (!custom) (if (type == RulingColumns.TYPE) RulingColumns.DEFS else emptyList()) else nodes.firstOrNull { it.name == type }?.columns.orEmpty()
+
     /** Short version string recorded with each fact, so a fact can be read against the schema that produced it. */
     val version: String get() = if (!custom) mode else "custom-" + Integer.toHexString(toJson().hashCode())
 
     fun toJson(): String {
-        val n = JSONArray(nodes.map { JSONObject().put("name", it.name).put("description", it.description) })
+        val n = JSONArray(nodes.map { t ->
+            JSONObject().put("name", t.name).put("description", t.description).also { o ->
+                if (t.columns.isNotEmpty()) o.put("columns", JSONArray(t.columns.map { JSONObject().put("name", it.name).put("kind", it.kind.name.lowercase()).put("description", it.description) }))
+            }
+        })
         val l = JSONArray(links.map { JSONObject().put("name", it.name).put("description", it.description).put("from", JSONArray(it.from.sorted())).put("to", JSONArray(it.to.sorted())) })
         return JSONObject().put("mode", mode).put("nodes", n).put("links", l).toString()
     }
@@ -46,7 +58,12 @@ data class GraphSchema(val mode: String = AUTO, val nodes: List<NodeType> = empt
         fun fromJson(json: String): GraphSchema = runCatching {
             val o = JSONObject(json)
             fun strings(a: JSONArray?) = (0 until (a?.length() ?: 0)).map { a!!.getString(it) }.toSet()
-            val nodes = o.optJSONArray("nodes")?.let { a -> (0 until a.length()).map { a.getJSONObject(it).let { n -> NodeType(n.getString("name"), n.optString("description")) } } }.orEmpty()
+            fun columns(a: JSONArray?) = (0 until (a?.length() ?: 0)).mapNotNull { i ->
+                val c = a!!.getJSONObject(i)
+                val kind = ColumnKind.entries.firstOrNull { it.name.equals(c.optString("kind"), true) } ?: return@mapNotNull null
+                ColumnDef(c.getString("name"), kind, c.optString("description"))
+            }
+            val nodes = o.optJSONArray("nodes")?.let { a -> (0 until a.length()).map { a.getJSONObject(it).let { n -> NodeType(n.getString("name"), n.optString("description"), columns(n.optJSONArray("columns"))) } } }.orEmpty()
             val links = o.optJSONArray("links")?.let { a -> (0 until a.length()).map { a.getJSONObject(it).let { l -> LinkType(l.getString("name"), l.optString("description"), strings(l.optJSONArray("from")), strings(l.optJSONArray("to"))) } } }.orEmpty()
             GraphSchema(o.optString("mode", AUTO), nodes, links)
         }.getOrDefault(GraphSchema())
@@ -65,7 +82,7 @@ data class GraphSchema(val mode: String = AUTO, val nodes: List<NodeType> = empt
                 "Gestion" to "La causa pendiente en que incide el requerimiento.", "Concepto" to "Una idea, argumento, petición o institución.",
                 "Voto" to "Una disidencia o prevención.", "Considerando" to "Un considerando numerado del fallo.",
             )
-            val nodes = LegalFacts.TYPES.map { NodeType(it, described[it].orEmpty()) }
+            val nodes = LegalFacts.TYPES.map { NodeType(it, described[it].orEmpty(), if (it == RulingColumns.TYPE) RulingColumns.DEFS else emptyList()) }
             val links = LegalFacts.RELATIONS.map { (name, description) ->
                 val (from, to) = LegalFacts.DIRECTIONS.getValue(name)
                 LinkType(name, description.substringAfter(": ", description), from, to)

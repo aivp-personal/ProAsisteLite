@@ -53,7 +53,8 @@ class MainActivity:ComponentActivity(){
     // "Save as" for exports: the user picks the folder (or Drive); the app writes the file there.
     // The folder a Convert to DocLang run writes into.
     private val actionFolderPicker=registerForActivityResult(ActivityResultContracts.OpenDocumentTree()){model.docLangFolder(it)}
-    private val exportPickers=listOf("text/markdown","application/pdf","text/csv","application/json","application/octet-stream").associateWith{mime->registerForActivityResult(ActivityResultContracts.CreateDocument(mime)){model.exportTo(it)}}
+    private val tablePicker=registerForActivityResult(ActivityResultContracts.OpenDocument()){it?.let(model::readTable)}
+    private val exportPickers=listOf("text/markdown","application/pdf","text/csv","application/json","application/octet-stream",com.proasiste.lite.PlantroomModel.XLSX).associateWith{mime->registerForActivityResult(ActivityResultContracts.CreateDocument(mime)){model.exportTo(it)}}
     // The progress notification needs this on Android 13+. Declining it doesn't stop the import; the notification just isn't shown.
     private val notifications=registerForActivityResult(ActivityResultContracts.RequestPermission()){folderPicker.launch(null)}
     private fun pickFolder(){
@@ -77,11 +78,15 @@ class MainActivity:ComponentActivity(){
                 onAddTag=model::addTag,onRemoveTag=model::removeTag,onToggleTagFilter=model::toggleTagFilter,
                 onAddTagRule=model::addTagRule,onDeleteTagRule=model::deleteTagRule,onApplyTagRules=model::applyTagRules,
                 onDefineTag=model::defineTag,onTagWithAi=model::tagWithAi,
-                onSchemaMode=model::setSchemaMode,onAddNodeType=model::addNodeType,onRemoveNodeType=model::removeNodeType,
+                onSchemaMode=model::setSchemaMode,onAddNodeType=model::addNodeType,onRemoveNodeType=model::removeNodeType,onAddColumn=model::addColumn,onRemoveColumn=model::removeColumn,
                 onAddLinkType=model::addLinkType,onRemoveLinkType=model::removeLinkType,onLegalPreset=model::useLegalPreset,
                 onSaveAnswer=model::saveAnswer,onOpenReport=model::openReport,onCloseReport=model::closeReport,onSaveReport=model::saveReport,onDeleteReport=model::deleteReport,
                 onNewNote=model::newNote,onDecide=model::decide,onExportReport=model::exportReport,onExportDecisions=model::exportDecisions,onExportFacts=model::exportFacts,onExportDocLang=model::exportDocLang,onRunAction=model::runAction,onSaveSkill=model::saveSkill,onDeleteSkill=model::deleteSkill,
-                onOpenGraph=model::openGraph,onCloseGraph=model::closeGraph,onMergeNames=model::mergeNames,onOpenGraphFact={e->model.graphFactItem(e)?.let{document=it}},
+                onOpenGraph=model::openGraph,onOpenTable={model.openTable()},onOpenHistory=model::openHistory,onCloseHistory=model::closeHistory,onSearchHistory=model::searchHistory,onReopenHistory=model::reopenHistory,
+                onDeleteHistory=model::deleteHistory,onClearHistory=model::clearHistory,onOpenMemory=model::openMemory,onCloseMemory=model::closeMemory,onAddNote=model::addNote,
+                onEditNote=model::editNote,onDeleteNote=model::deleteNote,onAcceptNote=model::acceptNote,onDismissNote=model::dismissNote,onShowTable={model.openTable(it)},onExportTable=model::exportTable,
+                onImportTable={tablePicker.launch(arrayOf("text/csv","text/comma-separated-values","text/tab-separated-values","text/plain",com.proasiste.lite.PlantroomModel.XLSX,"application/vnd.ms-excel","application/octet-stream"))},
+                onTableSheet=model::chooseTableSheet,onTableMap=model::changeTableMap,onConfirmTableImport=model::confirmTableImport,onCancelTableImport=model::cancelTableImport,onCloseTable=model::closeTable,onFillColumns={model.fillColumns()},onOpenTableRow={r->model.tableRowItem(r)?.let{document=it}},onCloseGraph=model::closeGraph,onMergeNames=model::mergeNames,onOpenGraphFact={e->model.graphFactItem(e)?.let{document=it}},
                 
                 onConfirmShare={text->model.dismissShare();startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,text),tr("Share answer", "Compartir respuesta")))},onQuery=model::setQuery,onSearch=model::search,
                 onImportModel={modelPicker.launch(arrayOf("*/*"))},onImportCorpus={packPicker.launch(arrayOf("application/zip","application/octet-stream"))},
@@ -92,7 +97,7 @@ class MainActivity:ComponentActivity(){
                 onImportGraph={graphPicker.launch(arrayOf("application/json","application/octet-stream","text/*"))},
                 onImageSearch={photoChoices=true},onRecordAudio={if(recorder!=null)stopRecording()else if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)startRecording()else microphone.launch(Manifest.permission.RECORD_AUDIO)},
                 onCapturePhoto={takePhoto(true)},
-                onOpenSource={if(it.kind==UiKind.REPORT)document=it else if(it.kind==UiKind.AUDIO)playAudio(it) else originalPhoto=it},
+                onOpenSource={model.openedSource(it.id);if(it.kind==UiKind.TABLE)model.openTable() else if(it.kind==UiKind.REPORT)document=it else if(it.kind==UiKind.AUDIO)playAudio(it) else originalPhoto=it},
                 onPlayAudio=::playAudio,onStopAudio=::stopAudio,onDismissError=model::dismissError,
                 onIndex=model::index,onCancelIndex=model::cancel,
                 onApplyFilters=model::applyFilters,onKindFilter=model::setKindFilter,onResetFilters=model::resetFilters

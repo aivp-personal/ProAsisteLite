@@ -67,6 +67,13 @@ internal fun GraphScreen(g: UiGraph, actions: UiActions) {
                             if (p.nodes.size < p.totalNodes) tr("The ${p.nodes.size} most linked of ${p.totalNodes} names · ${p.totalLinks} facts", "Los ${p.nodes.size} nombres más enlazados de ${p.totalNodes} · ${p.totalLinks} datos")
                             else tr("${p.nodes.size} names · ${p.totalLinks} facts", "${p.nodes.size} nombres · ${p.totalLinks} datos"), color = Muted, fontSize = 12.sp)
                     }
+                    // Names that are probably one thing, spelled two ways: offered to merge, never merged on their own.
+                    val dupes = remember(p) { p?.let { com.proasiste.lite.graph.SameName.likely(it.nodes) }.orEmpty() }
+                    var showDupes by remember(p) { mutableStateOf(false) }
+                    if (dupes.isNotEmpty()) TextButton(onClick = { showDupes = true }, modifier = Modifier.testTag("plantroom.graph-dupes")) {
+                        Text(tr("Same name? · ${dupes.size}", "¿Mismo nombre? · ${dupes.size}"), color = Gold, fontSize = 13.sp)
+                    }
+                    if (showDupes) DuplicatesDialog(dupes, onDismiss = { showDupes = false }) { keep, other -> actions.onMergeNames(keep.key, listOf(other.key)) }
                 }
                 when {
                     p == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Gold) }
@@ -88,7 +95,7 @@ internal fun GraphScreen(g: UiGraph, actions: UiActions) {
                         BoxWithConstraints(Modifier.fillMaxSize()) {
                             val wide = maxWidth > 700.dp
                             val canvas: @Composable (Modifier) -> Unit = { m -> GraphCanvas(p, colourOf, selected, m) { selected = it } }
-                            val facts: @Composable (Modifier) -> Unit = { m -> selected?.let { FactsPanel(p, it, g.titles, colourOf, actions, m) } ?: Hint(m) }
+                            val facts: @Composable (Modifier) -> Unit = { m -> selected?.let { FactsPanel(p, it, g.titles, colourOf, actions, m, g.values) } ?: Hint(m) }
                             if (wide) Row(Modifier.fillMaxSize()) { canvas(Modifier.weight(1f).fillMaxHeight()); facts(Modifier.width(340.dp).fillMaxHeight()) }
                             else Column(Modifier.fillMaxSize()) { canvas(Modifier.weight(1.3f).fillMaxWidth()); facts(Modifier.weight(1f).fillMaxWidth()) }
                         }
@@ -111,7 +118,7 @@ internal fun GraphScreen(g: UiGraph, actions: UiActions) {
 }
 
 /** The facts that touch one node, by file and page; tapping one opens its page. */
-@Composable private fun FactsPanel(p: GraphPicture, node: Int, titles: Map<String, String>, colourOf: Map<String, Color>, actions: UiActions, m: Modifier) {
+@Composable private fun FactsPanel(p: GraphPicture, node: Int, titles: Map<String, String>, colourOf: Map<String, Color>, actions: UiActions, m: Modifier, values: Map<String, List<Pair<String, String>>> = emptyMap()) {
     val n = p.nodes[node]
     val links = remember(p, node) { p.links.filter { it.from == node || it.to == node }.sortedWith(compareBy({ titles[it.edge.sourceId] ?: "" }, { it.edge.page })) }
     Column(m.background(Steel)) {
@@ -125,6 +132,12 @@ internal fun GraphScreen(g: UiGraph, actions: UiActions) {
             TextButton(onClick = { merging = true }, modifier = Modifier.testTag("plantroom.graph-merge")) { Text(tr("Merge names…", "Unir nombres…"), color = Gold, fontSize = 13.sp) }
         }
         if (merging) MergeDialog(p, node, onDismiss = { merging = false }) { keys -> merging = false; actions.onMergeNames(n.key, keys) }
+        // Its columns, from the rules, imported tables or the model: "Fecha 2026-09-02 · Resultado Rechazado".
+        values[n.key]?.takeIf { it.isNotEmpty() }?.let { vs ->
+            Text(vs.groupBy({ it.first }, { it.second }).entries.joinToString("  ·  ") { (c, v) -> "$c: ${v.distinct().joinToString(", ")}" },
+                color = Mist, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 4, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 34.dp, end = 16.dp, bottom = 6.dp).testTag("plantroom.graph-values"))
+        }
         HorizontalDivider(color = Line)
         LazyColumn(Modifier.fillMaxSize().testTag("plantroom.graph-facts")) {
             items(links) { l -> FactRow(p, l.edge, titles, actions) }
@@ -309,4 +322,31 @@ private fun fansOf(p: GraphPicture, s: Int): List<Fan> {
         val text = label.let { if (it.length > 32) it.take(31) + "…" else it } + if (members.size > 1) " ×${members.size}" else ""
         Fan(text, start + slice / 2, angles).also { start += slice }
     }
+}
+
+/**
+ * Likely duplicates: each pair is a name kept (the more linked) and one that is probably the same. "Merge" joins them as
+ * Merge names does; "Not the same" hides the pair until the graph is opened again.
+ */
+@Composable private fun DuplicatesDialog(pairs: List<Pair<GraphPicture.Node, GraphPicture.Node>>, onDismiss: () -> Unit, onMerge: (GraphPicture.Node, GraphPicture.Node) -> Unit) {
+    var hidden by remember { mutableStateOf(setOf<Pair<String, String>>()) }
+    AlertDialog(onDismissRequest = onDismiss, modifier = Modifier.testTag("plantroom.graph-dupes-dialog"),
+        title = { Text(tr("Probably the same", "Probablemente lo mismo"), fontSize = 18.sp) },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 480.dp)) {
+                item { Text(tr("Names spelled two ways: the same first name and both surnames, or the same case number. Merging joins their facts in the files that mention the name kept.", "Nombres escritos de dos formas: mismo nombre y ambos apellidos, o el mismo número de rol. Unir junta sus datos en los archivos que mencionan el nombre que se conserva."), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp)) }
+                items(pairs.filter { (a, b) -> (a.key to b.key) !in hidden }, key = { it.first.key + "|" + it.second.key }) { (keep, other) ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Text(keep.name, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Text("= ${other.name}", fontSize = 13.sp, color = Muted)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { onMerge(keep, other); hidden = hidden + (keep.key to other.key) }) { Text(tr("Merge", "Unir"), color = Gold) }
+                            TextButton(onClick = { hidden = hidden + (keep.key to other.key) }) { Text(tr("Not the same", "No es lo mismo")) }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(tr("Done", "Listo")) } },
+    )
 }

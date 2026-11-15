@@ -101,7 +101,8 @@ class IndexService:Service(){
                 if(s!=null&&!modelReady)modelMissing=true
                 if(s!=null&&modelReady){
                     publish(store,tags,projects,done,s.title,Phase.INDEX,indexed+failed+scans)
-                    try{val e=engine.encode(s);store.saveChunks(s,e.chunks,e.pages,e.noTextPages);indexed++}
+                    // A file that came in an indexed pack already has its chunks: no model needed.
+                    try{val e=store.prebuilt(s)?:engine.encode(s);store.saveChunks(s,e.chunks,e.pages,e.noTextPages);store.dropPrebuilt(s);indexed++}
                     catch(e:Engine.NeedsOcr){store.markNeedsOcr(s.id,e.pages,e.message?:"");scans++}
                     catch(e:Exception){store.error(s.id,e.message?:tr("Could not process source","No se pudo procesar la fuente"));failed++}
                     done++;continue

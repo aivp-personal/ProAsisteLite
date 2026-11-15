@@ -1,6 +1,7 @@
 package com.proasiste.lite.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,6 +52,17 @@ internal fun GraphTypesSheet(state: UiState, actions: UiActions, onClose: () -> 
                             }
                             TextButton(onClick = { actions.onRemoveNodeType(n.name) }, enabled = !locked) { Text(tr("Remove", "Quitar"), color = Warning, fontSize = 12.sp) }
                         }
+                        // Columns: values each node of this type has (a contract's amount, a ruling's date), read from the files by the model.
+                        Row(Modifier.horizontalScroll(rememberScrollState()).padding(start = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            n.columns.forEach { c -> InputChip(selected = false, onClick = { actions.onRemoveColumn(n.name, c.name) }, enabled = !locked,
+                                label = { Text("${c.name} · ${columnKind(c.kind)}  ✕", fontSize = 11.sp) }) }
+                            var col by remember(n.name) { mutableStateOf("") }; var kind by remember(n.name) { mutableStateOf(com.proasiste.lite.graph.ColumnKind.TEXT) }
+                            OutlinedTextField(col, { col = it.take(40) }, singleLine = true, enabled = !locked, placeholder = { Text(tr("Column", "Columna"), fontSize = 11.sp) },
+                                modifier = Modifier.width(130.dp).testTag("plantroom.column-name-${n.name}"), textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, color = Mist))
+                            val kinds = com.proasiste.lite.graph.ColumnKind.entries
+                            AssistChip(onClick = { kind = kinds[(kinds.indexOf(kind) + 1) % kinds.size] }, enabled = !locked, label = { Text(columnKind(kind), fontSize = 11.sp) })
+                            TextButton(onClick = { actions.onAddColumn(n.name, col, kind); col = "" }, enabled = !locked && col.isNotBlank(), modifier = Modifier.testTag("plantroom.column-add-${n.name}")) { Text(tr("Add column", "Agregar columna"), fontSize = 12.sp) }
+                        }
                     }
                     var name by remember { mutableStateOf("") }; var description by remember { mutableStateOf("") }
                     Field(name, { name = it.take(40) }, tr("Type", "Tipo"), "Contrato", "plantroom.node-name", !locked)
@@ -93,6 +105,14 @@ internal fun GraphTypesSheet(state: UiState, actions: UiActions, onClose: () -> 
             Spacer(Modifier.height(28.dp))
         }
     }
+}
+
+private fun columnKind(k: com.proasiste.lite.graph.ColumnKind) = when (k) {
+    com.proasiste.lite.graph.ColumnKind.TEXT -> tr("text", "texto")
+    com.proasiste.lite.graph.ColumnKind.NUMBER -> tr("number", "número")
+    com.proasiste.lite.graph.ColumnKind.DATE -> tr("date", "fecha")
+    com.proasiste.lite.graph.ColumnKind.BOOL -> tr("yes/no", "sí/no")
+    com.proasiste.lite.graph.ColumnKind.LIST -> tr("list", "lista")
 }
 
 @Composable

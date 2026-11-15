@@ -25,6 +25,10 @@ class RulingSkeleton private constructor(
     /** Other nodes the skeleton created, as (type, name): offered to the model so it reuses the names. */
     val knownNodes: List<Pair<String, String>>,
     private val votes: List<Vote>,
+    /** The outcome read from the decision section ([Decision.outcome]), or null when it doesn't say it plainly. */
+    val outcome: String? = null,
+    /** Who filed the action, from the header or VISTOS; null for a preventive control, which has no filer. */
+    val filer: String? = null,
 ) {
     class Vote(val name: String, val kind: String, val sense: String, val ministers: List<String>, val firstPage: Int, val lastPage: Int, val text: String)
 
@@ -86,7 +90,8 @@ class RulingSkeleton private constructor(
 
             // ---- Sections ----
             val considerandoStart = CONSIDERANDO_START.find(doc.text)?.range?.last?.plus(1) ?: -1
-            val resolveStart = RESOLVE_START.find(doc.text, maxOf(0, considerandoStart))?.range?.first ?: -1
+            // Preventive control rulings decide with "SE DECLARA:" instead.
+            val resolveStart = (RESOLVE_START.find(doc.text, maxOf(0, considerandoStart)) ?: DECLARE_START.find(doc.text, maxOf(0, considerandoStart)))?.range?.first ?: -1
             val votesStart = resolveStart.takeIf { it >= 0 }?.let { VOTE_HEADING.find(doc.text, it)?.range?.first } ?: -1
             val closing = CLOSING.find(doc.text, maxOf(0, resolveStart))?.range?.first ?: doc.text.length
             val knownRulings = mutableSetOf(ruling)
@@ -113,8 +118,10 @@ class RulingSkeleton private constructor(
             }
 
             // SE RESUELVE: one fact per decided point.
+            var outcome: String? = null
             if (resolveStart >= 0) {
                 val end = if (votesStart >= 0) votesStart else closing
+                outcome = Decision.outcome(doc.text.substring(resolveStart, end))
                 for ((clause, at) in Decision.clauses(doc.text.substring(resolveStart, end))) {
                     val concept = Decision.concept(clause)
                     known += "Concepto" to concept
@@ -159,7 +166,7 @@ class RulingSkeleton private constructor(
             knownRulings += Citations.allRoles(doc.text, court, ruling)
             known += ministers.map { "Ministro" to it }
             known += knownRulings.map { "Fallo" to it }
-            return RulingSkeleton(ruling, court, facts.distinctBy { listOf(it.subject, it.relation, it.obj, it.statement) }, ministers, knownRulings, known.distinct(), votes)
+            return RulingSkeleton(ruling, court, facts.distinctBy { listOf(it.subject, it.relation, it.obj, it.statement) }, ministers, knownRulings, known.distinct(), votes, outcome, requirente)
         }
 
         private fun fact(page: Int, st: String, s: String, rel: String, ot: String, o: String, statement: String) =
@@ -170,6 +177,7 @@ class RulingSkeleton private constructor(
         private val DATE = Regex("\\[\\s*(\\d{1,2}\\s+de\\s+[a-záéíóú]+\\s+de\\s+\\d{4})\\s*]", RegexOption.IGNORE_CASE)
         private val CONSIDERANDO_START = Regex("\\bY\\s+CONSIDERANDO\\s*:", RegexOption.IGNORE_CASE)
         private val RESOLVE_START = Regex("\\bSE\\s+RESUELVE\\s*:")
+        private val DECLARE_START = Regex("\\bSE\\s+DECLARA\\s*:")
         val VOTE_HEADING = Regex("(?m)^\\s*(?:DISIDENCIAS?|PREVENCI[ÓO]N(?:ES)?|VOTOS?\\s+(?:EN\\s+CONTRA|PARTICULAR(?:ES)?|DISIDENTES?|POR\\s+(?:ACOGER|RECHAZAR)))\\s*$|\\bAcordada\\s+con\\s+el\\s+voto\\s+en\\s+contra|\\bSe\\s+previene\\s+que\\b|\\bLos?\\s+Ministr[oa]s?\\s+(?:señor(?:a|es)?\\s+)?[A-ZÁÉÍÓÚ][^.]{3,160}?\\s+(?:estuv(?:o|ieron)|previene[n]?|concurre[n]?)\\b")
         private val CLOSING = Regex("\\bRedact[óo]\\s+la\\s+sentencia|\\bPronunciada\\s+por\\b|\\bComun[íi]quese\\b")
     }
@@ -199,6 +207,8 @@ class RulingSkeleton private constructor(
             // A court's name may wrap onto the next line; it ends at punctuation, a blank line, "EN ACTUAL", "BAJO" or "VISTOS".
             private val GESTION = Regex("EN\\s+(?:EL|LA|LOS|LAS)\\s+(?:PROCESO|CAUSA|AUTOS|JUICIO|GESTI[ÓO]N)\\s+(.{3,120}?),?\\s+SEGUID[OA]S?\\s+ANTE\\s+(?:EL|LA)\\s+(.{5,120}?)(?:[,.;]|\\n\\s*\\n|\\s+EN\\s+ACTUAL\\b|\\s+BAJO\\b|\\s+VISTOS\\b|$)", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
             private val ARTICLES = Regex("ART[ÍI]CULOS?\\s+(.+?)\\s+(?:DE\\s+(?:LA|EL|LOS|LAS)|DEL)\\s+(.+)", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+            private val VISTOS = Regex("\\bVISTOS\\b")
+            private val FILER = Regex("VISTOS\\s*:?\\s*(?:Que,?\\s*)?(?:(?:con\\s+)?fecha\\s+\\d{1,2}\\s+de\\s+\\p{L}+(?:\\s+de)?\\s+\\d{4},?\\s*)?(.{3,200}?),?\\s+(?:acciona|deduce|dedujo|interpone|interpuso|requiere|requirió|formula|formuló|presenta|presentó|ha\\s+(?:deducido|interpuesto|presentado|formulado|requerido|accionado)|solicita|solicitó)\\b", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
             private val GESTION_START = Regex("\\bEN\\s+(?:EL|LA|LOS|LAS)\\s+(?:PROCESO|CAUSA|AUTOS|JUICIO|GESTI[ÓO]N)\\b", RegexOption.IGNORE_CASE)
             private val ARTICLE = Regex("(\\d{1,4})\\s*(BIS|TER|QU[ÁA]TER|QUINQUIES)?(?:,?\\s*INCISOS?\\s+((?:\\w+\\s*(?:,|Y|E)?\\s*)+?)(?=,|\\s+N[°º]|\\s+LETRA|\\s+SEGUNDA|\\s+PRIMERA|\\s+PARTE|$|\\s+DE\\b))?", RegexOption.IGNORE_CASE)
 
@@ -207,10 +217,19 @@ class RulingSkeleton private constructor(
                 val captionStart = TYPES.firstNotNullOfOrNull { it.first.find(first)?.range?.first } ?: return Header(type, null, emptyList(), null)
                 val rest = first.substring(captionStart)
                 val blocks = rest.split(CAPTION_END).map { it.trim() }.filter { it.isNotEmpty() }
-                val caption = blocks.getOrNull(0).orEmpty()
                 // The requirente's line often runs straight into "EN EL PROCESO ..." with no blank line between.
-                val requirente = blocks.getOrNull(1)?.let { b -> GESTION_START.find(b)?.let { b.substring(0, it.range.first) } ?: b }
+                var requirente = blocks.getOrNull(1)?.let { b -> GESTION_START.find(b)?.let { b.substring(0, it.range.first) } ?: b }
                     ?.trim()?.takeIf { it.isNotEmpty() && !it.startsWith("VISTOS") }?.let { Names.titleCase(it.replace(Regex("\\s+"), " ")) }
+                var caption = blocks.getOrNull(0).orEmpty()
+                // Text read from the PDF's tags has no blank lines between the caption, the filer and the case: the
+                // caption then ends at the case or at VISTOS, and the filer comes from VISTOS' first sentence.
+                if (blocks.size < 2) {
+                    val end = listOfNotNull(GESTION_START.find(rest)?.range?.first, VISTOS.find(rest)?.range?.first).minOrNull() ?: rest.length
+                    caption = rest.substring(0, end)
+                    requirente = FILER.find(first)?.groupValues?.get(1)?.replace(Regex("\\s+"), " ")?.trim()?.trimEnd(',')
+                        ?.replace(Regex("^(?:don|doña|el|la)\\s+", RegexOption.IGNORE_CASE), "")?.takeIf { it.length >= 3 }
+                        ?.let { if (it == it.uppercase()) Names.titleCase(it) else it }
+                }
                 val gestion = GESTION.find(rest)?.let { m ->
                     val id = m.groupValues[1].replace(Regex("\\s+"), " ").trim().trimEnd(',')
                     val courtName = Names.titleCase(m.groupValues[2].replace(Regex("\\s+"), " ").trim())
@@ -376,10 +395,14 @@ class RulingSkeleton private constructor(
 
     /** "SE RESUELVE: I. QUE SE RECHAZA ... II. QUE SE ALZA ..." */
     object Decision {
-        private val CLAUSE = Regex("(?m)^[ \\t]*(?:[IVX]{1,5}|\\d{1,2})\\s*[.)\\-]\\s*(?=QUE\\b|SE\\b|ÁLCESE\\b|OF[ÍI]CIESE\\b|HABI)")
+        // A fojas stamp ("0000588 QUINIENTOS OCHENTA Y OCHO") may sit between a clause's number and its first word.
+        private val CLAUSE = Regex("(?m)^[ \\t]*(?:[IVX]{1,5}|\\d{1,2})\\s*[.)\\-]\\s*(?:\\d{4,}\\s+)?(?:[A-ZÁÉÍÓÚÑ]+\\s+){0,7}?(?=QUE\\b|SE\\b|ÁLCESE\\b|OF[ÍI]CIESE\\b|HABI)")
+        private val SINGLE = Regex("^\\s*SE\\s+(?:RESUELVE|DECLARA)\\s*:\\s*(?:\\d{4,}\\s+)?(?=QUE\\b|SE\\b)")
 
         fun clauses(section: String): List<Pair<String, Int>> {
             val marks = CLAUSE.findAll(section).toList()
+            // A single decided point has no number: "SE RESUELVE: QUE, SE ACOGE EL REQUERIMIENTO…"
+            if (marks.isEmpty()) return SINGLE.find(section)?.let { m -> listOf(section.substring(m.range.last + 1).replace(Regex("\\s+"), " ").trim() to m.range.last + 1) }.orEmpty().filter { it.first.length > 8 }
             return marks.mapIndexed { i, m ->
                 val end = marks.getOrNull(i + 1)?.range?.first ?: section.length
                 section.substring(m.range.last + 1, end).replace(Regex("\\s+"), " ").trim() to m.range.first
@@ -396,6 +419,30 @@ class RulingSkeleton private constructor(
                 "costas" in u -> "Costas"
                 "constitucional" in u && "declara" in u -> "Declaración de constitucionalidad"
                 else -> Names.titleCase(clause.take(60)).substringBefore(".")
+            }
+        }
+
+        /**
+         * The outcome in one word, from the decision section's own wording: Acogido, Acogido en parte, Rechazado,
+         * Inadmisible, or for a preventive control Conforme, Conforme en parte, No conforme. Null when it doesn't say
+         * it plainly: an outcome is never guessed.
+         */
+        fun outcome(section: String): String? {
+            val u = fold(section).replace(Regex("\\s+"), " ")
+            val upheld = Regex("\\bse\\s+acoge|\\bacogese\\b|(?<!\\bno )\\bha\\s+lugar\\b").containsMatchIn(u)
+            val rejected = Regex("\\bse\\s+rechaza|\\brechazase\\b|\\bse\\s+desestima|\\bno\\s+ha\\s+lugar\\b").containsMatchIn(u)
+            val partly = Regex("acoge\\s+parcialmente|\\ben\\s+lo\\s+demas\\b").containsMatchIn(u)
+            val conform = Regex("(?<!\\bno )\\b(?:es|son)\\s+conformes?\\s+con\\s+la\\s+constitucion").containsMatchIn(u)
+            val against = Regex("\\bno\\s+(?:es|son)\\s+conformes?\\s+con|\\b(?:es|son)\\s+contrari[oa]s?\\s+a\\s+la\\s+constitucion|\\b(?:es|son)\\s+inconstitucional").containsMatchIn(u)
+            return when {
+                upheld && (rejected || partly) -> "Acogido en parte"
+                upheld -> "Acogido"
+                rejected -> "Rechazado"
+                "inadmisible" in u -> "Inadmisible"
+                conform && against -> "Conforme en parte"
+                against -> "No conforme"
+                conform -> "Conforme"
+                else -> null
             }
         }
 

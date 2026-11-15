@@ -1,5 +1,6 @@
 package com.proasiste.lite.runtime
 
+import com.proasiste.lite.graph.Graph
 import com.proasiste.lite.graph.NewFact
 import com.proasiste.lite.ui.tr
 import kotlinx.coroutines.Dispatchers
@@ -32,12 +33,16 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
     /** [reviewItems] are facts the checks held back, each with its reason; [legal] says which mode ran; [failedParts] replies stayed unreadable after a retry. */
     class Result(val facts: List<NewFact>, val pagesSent: List<Int>, val dropped: Int, val cost: Double, val reviewItems: List<Pair<NewFact, String>> = emptyList(), val legal: Boolean = false, val failedParts: Int = 0,
                  /** The custom schema's version when the project's own types were used. */
-                 val schemaVersion: String? = null) {
+                 val schemaVersion: String? = null,
+                 /** Column values the model read for the project's own types, each checked against its page. */
+                 val values: List<ModelValue> = emptyList()) {
         val review: Int get() = reviewItems.size
         /** What wrote the AI facts of this result, for provenance. */
         val extractor: String get() = "$MODEL@" + (schemaVersion ?: if (legal) LegalFacts.PROMPT_VERSION else GENERAL_PROMPT_VERSION)
     }
     private class Reply(val content: String?, val cost: Double)
+    /** A column value for one node: [value] as stored (dates ISO), read on [page]. */
+    data class ModelValue(val type: String, val node: String, val column: String, val value: String, val page: Int)
 
     /** Sends a request, asking once more if the reply is cut off or isn't readable JSON. Network and account errors still throw. */
     private suspend fun ask(key: String, body: JSONObject): Reply {
@@ -95,6 +100,7 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
         val slots = Semaphore(PARALLEL)
         val extractor = "$MODEL@${schema.version}"
         val instructions = customInstructions(schema); val answer = customSchema(schema)
+        val found = mutableListOf<ModelValue>()
         val results = coroutineScope {
             readable.map { page ->
                 async {
@@ -103,6 +109,8 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
                         val (passed, dropped) = reply.content?.let { parse(it, checked[page.page] ?: page) } ?: (emptyList<NewFact>() to 0)
                         val (fits, breaks) = passed.partition { schema.problem(it) == null }
                         breaks.forEach { debugLog("dropped (${schema.problem(it)}) p${it.page}: ${it.statement}") }
+                        val vals = reply.content?.let { values(it, schema, checked[page.page] ?: page) }.orEmpty()
+                        synchronized(found) { found += vals }
                         onProgress(done.incrementAndGet(), readable.size)
                         Triple(fits.map { it.copy(extractor = extractor) }, dropped + breaks.size, reply)
                     }
@@ -110,7 +118,7 @@ class DeepSeekFacts(private val send: suspend (key: String, body: JSONObject) ->
             }.awaitAll()
         }
         return Result(results.flatMap { it.first }, readable.map { it.page }, results.sumOf { it.second }, results.sumOf { it.third.cost },
-            failedParts = results.count { it.third.content == null }, schemaVersion = schema.version)
+            failedParts = results.count { it.third.content == null }, schemaVersion = schema.version, values = found.distinctBy { listOf(it.type, Graph.keyOf(it.node), it.column, it.value) })
     }
 
     /**
@@ -232,13 +240,25 @@ Return JSON only."""
                 fun side(s: Set<String>) = if (s.isEmpty()) "any type" else s.sorted().joinToString(" or ")
                 append("- ${l.name} (${side(l.from)} -> ${side(l.to)})").append(if (l.description.isNotBlank()) ": ${l.description}" else "").append('\n')
             }
+            val withColumns = schema.nodes.filter { it.columns.isNotEmpty() }
+            if (withColumns.isNotEmpty()) {
+                append("\nColumns: for a node of these types, put each value the page states in \"values\" (node, node_type, column, value, page). ")
+                append("Copy the value as the page gives it; dates as YYYY-MM-DD; numbers with digits only. Skip a value the page doesn't state.\n")
+                withColumns.forEach { t -> append("- ${t.name}: ").append(t.columns.joinToString("; ") { c -> "${c.name} (${c.kind.name.lowercase()})" + if (c.description.isNotBlank()) ": ${c.description}" else "" }).append('\n') }
+            }
         }
 
         /** The answer format, with the type and link names as closed lists. */
         fun customSchema(schema: com.proasiste.lite.graph.GraphSchema): JSONObject {
             val types = JSONArray(schema.nodes.map { it.name }); val links = JSONArray(schema.links.map { it.name })
-            return JSONObject().put("type", "object").put("additionalProperties", false).put("required", JSONArray().put("facts"))
-                .put("properties", JSONObject().put("facts", JSONObject().put("type", "array").put("items",
+            val columns = schema.nodes.flatMap { it.columns.map { c -> c.name } }.distinct()
+            val properties = JSONObject()
+            if (columns.isNotEmpty()) properties.put("values", JSONObject().put("type", "array").put("items", JSONObject().put("type", "object").put("additionalProperties", false)
+                .put("required", JSONArray(listOf("column", "node", "node_type", "page", "value")))
+                .put("properties", JSONObject().put("node", JSONObject().put("type", "string")).put("node_type", JSONObject().put("type", "string").put("enum", JSONArray(schema.nodes.filter { it.columns.isNotEmpty() }.map { it.name })))
+                    .put("column", JSONObject().put("type", "string").put("enum", JSONArray(columns))).put("value", JSONObject().put("type", "string")).put("page", JSONObject().put("type", "integer")))))
+            return JSONObject().put("type", "object").put("additionalProperties", false).put("required", JSONArray().put("facts").also { if (columns.isNotEmpty()) it.put("values") })
+                .put("properties", properties.put("facts", JSONObject().put("type", "array").put("items",
                     JSONObject().put("type", "object").put("additionalProperties", false)
                         .put("required", JSONArray(listOf("from", "from_type", "page", "relation", "statement", "to", "to_type")))
                         .put("properties", JSONObject()
@@ -282,6 +302,30 @@ Return JSON only."""
             response.optJSONObject("usage")?.optDouble("cost", 0.0)?.takeIf { it.isFinite() } ?: 0.0
 
         /** Every fact in a reply, unchecked. */
+        /**
+         * The column values in a reply, kept only when the column belongs to the node's type, the value reads as its kind,
+         * and the page shows it: a date's year and day, a number's digits, or most of a text's words.
+         */
+        fun values(content: String, schema: com.proasiste.lite.graph.GraphSchema, page: PageText): List<ModelValue> {
+            val items = runCatching { JSONObject(content.trim().removePrefix("```json").removePrefix("```").removeSuffix("```")).optJSONArray("values") }.getOrNull() ?: return emptyList()
+            val onPage = Graph.keyOf(page.text); val digits = page.text.filter { it.isDigit() }
+            return (0 until items.length()).mapNotNull { i ->
+                val o = items.optJSONObject(i) ?: return@mapNotNull null
+                val type = o.optString("node_type"); val node = o.optString("node").trim(); val column = o.optString("column")
+                val def = schema.nodes.firstOrNull { it.name == type }?.columns?.firstOrNull { it.name == column } ?: return@mapNotNull null
+                val raw = o.optString("value").trim()
+                if (node.isEmpty() || raw.isEmpty() || o.optInt("page", page.page) != page.page) return@mapNotNull null
+                val value = com.proasiste.lite.graph.TableImport.cell(def.kind, raw) ?: return@mapNotNull null
+                val shown = when (def.kind) {
+                    com.proasiste.lite.graph.ColumnKind.DATE -> value.take(4) in page.text && (value.substring(8).trimStart('0') in page.text)
+                    com.proasiste.lite.graph.ColumnKind.NUMBER -> raw.filter { it.isDigit() }.let { d -> d.isNotEmpty() && d in digits }
+                    com.proasiste.lite.graph.ColumnKind.BOOL -> true
+                    else -> Graph.keyOf(raw).split(" ").filter { it.length >= 3 }.let { w -> w.isEmpty() || w.count { it in onPage } * 10 >= w.size * 7 }
+                }
+                if (!shown) { debugLog("value not on page ${page.page}: $type $node $column=$raw"); null } else ModelValue(type, node, column, value, page.page)
+            }
+        }
+
         fun facts(content: String): List<NewFact> {
             val items = JSONObject(content.trim().removePrefix("```json").removePrefix("```").removeSuffix("```")).getJSONArray("facts")
             return (0 until items.length()).mapNotNull { i ->

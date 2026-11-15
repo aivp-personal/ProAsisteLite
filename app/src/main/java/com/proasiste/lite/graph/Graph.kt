@@ -118,11 +118,13 @@ class Graph(private val store: Store) {
             // Facts that now say the same thing twice, and a name linked to itself ("Egg Cooker is part of Deluxe Egg Cooker").
             execSQL("DELETE FROM graph_edges WHERE source = ? AND (from_id IN ($v) OR to_id IN ($v))", arrayOf(s))
             execSQL("DELETE FROM graph_edges WHERE source = ? AND from_id = ? AND to_id = ?", arrayOf(s, target.id, target.id))
+            // Column values the file gave the merged names now belong to the name kept.
+            execSQL("UPDATE graph_values SET node_id = ? WHERE source = ? AND node_id IN ($v)", arrayOf(target.id, s))
         }
         for (s in sources) for (k in keys) insertWithOnConflict("graph_aliases", null, ContentValues().apply {
             put("building", project); put("source", s); put("key", k); put("type", target.type); put("name", target.name)
         }, SQLiteDatabase.CONFLICT_REPLACE)
-        execSQL("DELETE FROM graph_nodes WHERE building = ? AND NOT EXISTS (SELECT 1 FROM graph_edges e WHERE e.from_id = graph_nodes.id OR e.to_id = graph_nodes.id)", arrayOf(project))
+        execSQL(DELETE_UNLINKED, arrayOf(project))
         moved
     }
 
@@ -272,7 +274,7 @@ class Graph(private val store: Store) {
         val vectors = all.map { embed(it.statement) } // Before the transaction: embedding is the slow part.
         return db.inTransaction {
             execSQL("DELETE FROM graph_edges WHERE source = ? AND fact <> ''", arrayOf(sourceId))
-            execSQL("DELETE FROM graph_nodes WHERE building = ? AND NOT EXISTS (SELECT 1 FROM graph_edges e WHERE e.from_id = graph_nodes.id OR e.to_id = graph_nodes.id)", arrayOf(project))
+            execSQL(DELETE_UNLINKED, arrayOf(project))
             // A new extraction supersedes what the old one left to review; decided items stay as the record.
             execSQL("DELETE FROM graph_review WHERE source = ? AND status = 'pendiente'", arrayOf(sourceId))
             all.zip(vectors).count { (f, vector) ->
@@ -387,7 +389,7 @@ class Graph(private val store: Store) {
         val item = sampleItem(edgeId) ?: return false
         db.inTransaction {
             delete("graph_edges", "id = ?", arrayOf(edgeId.toString()))
-            execSQL("DELETE FROM graph_nodes WHERE building = ? AND NOT EXISTS (SELECT 1 FROM graph_edges e WHERE e.from_id = graph_nodes.id OR e.to_id = graph_nodes.id)", arrayOf(project))
+            execSQL(DELETE_UNLINKED, arrayOf(project))
             recordDecision(project, item, reason, "rechazado", item.fact, note)
         }
         return true
@@ -418,7 +420,7 @@ class Graph(private val store: Store) {
             val from = upsertNode(project, fact.subjectType, fact.subject, item.sourceId)
             val to = upsertNode(project, fact.objectType, fact.obj, item.sourceId)
             addEdge(project, from, to, fact.relation, item.sourceId, fact.page, fact.statement, vector, fact.extractor, fact.place)
-            execSQL("DELETE FROM graph_nodes WHERE building = ? AND NOT EXISTS (SELECT 1 FROM graph_edges e WHERE e.from_id = graph_nodes.id OR e.to_id = graph_nodes.id)", arrayOf(project))
+            execSQL(DELETE_UNLINKED, arrayOf(project))
             recordDecision(project, item, "página", "corregido", fact)
         }
         return true
@@ -525,6 +527,9 @@ class Graph(private val store: Store) {
         private val NOT_WORD = Regex("[^\\p{L}\\p{N}]+")
 
         /** "Excma. Corte  Suprema" and "excma corte suprema" share a key. Punctuation separates words. */
+        /** Nodes left with no links and no column values are removed: a ruling known only by its columns stays. */
+        const val DELETE_UNLINKED = "DELETE FROM graph_nodes WHERE building = ? AND NOT EXISTS (SELECT 1 FROM graph_edges e WHERE e.from_id = graph_nodes.id OR e.to_id = graph_nodes.id) AND NOT EXISTS (SELECT 1 FROM graph_values v WHERE v.node_id = graph_nodes.id)"
+
         fun keyOf(name: String): String =
             Normalizer.normalize(name.lowercase(), Normalizer.Form.NFD).replace(MARKS, "").replace(NOT_WORD, " ").trim()
 

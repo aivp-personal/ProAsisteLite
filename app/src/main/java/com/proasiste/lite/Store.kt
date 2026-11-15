@@ -21,7 +21,7 @@ import java.util.zip.ZipInputStream
 data class Source(val id:String,val path:String,val type:String,val building:String,val asset:String,val date:String,val title:String,val synthetic:Boolean,val indexed:Boolean=false,val error:String="",val pages:Int=0,val noTextPages:Int=0) {
     /** Every page lacks text: the whole file is a scan and can't be searched until it is OCR'd. */
     val needsOcr:Boolean get()=pages>0&&noTextPages==pages
-    fun ui(score:Float?=null, excerpt:String="", location:String="")=UiItem(id,title,when(type){"image"->UiKind.PHOTO;"audio"->UiKind.AUDIO;else->UiKind.REPORT},building,asset,date,path,excerpt,location,synthetic,score)
+    fun ui(score:Float?=null, excerpt:String="", location:String="")=UiItem(id,title,when(type){"image"->UiKind.PHOTO;"audio"->UiKind.AUDIO;"table"->UiKind.TABLE;else->UiKind.REPORT},building,asset,date,path,excerpt,location,synthetic,score)
 }
 /** A file waiting in the import queue: found in a folder the user picked, not yet copied into the library. */
 data class QueuedFile(val id:Long,val uri:String,val building:String,val folder:String,val name:String,val mime:String,val modified:Long)
@@ -138,6 +138,64 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
         }
         indexChanged()
     }
+    // ---- Imported tables ----
+    /** Saves how [sourceId]'s table maps onto the graph. */
+    fun saveTableMap(sourceId:String,map:com.proasiste.lite.graph.TableMap){
+        writableDatabase.insertWithOnConflict("table_maps",null,ContentValues().apply{put("source",sourceId);put("json",map.toJson())},SQLiteDatabase.CONFLICT_REPLACE)
+    }
+    /** The project's imported tables and their mappings. */
+    fun tableMaps(building:String):List<Pair<Source,com.proasiste.lite.graph.TableMap>>{
+        val byId=sources(building).associateBy{it.id}
+        return readableDatabase.rawQuery("SELECT m.source,m.json FROM table_maps m JOIN sources s ON s.id=m.source WHERE s.building=?",arrayOf(building)).use{c->
+            buildList{while(c.moveToNext())byId[c.getString(0)]?.let{s->runCatching{com.proasiste.lite.graph.TableMap.fromJson(c.getString(1))}.getOrNull()?.let{add(s to it)}}}}
+    }
+    /** Points an existing table source at a new copy of its file. */
+    fun replaceFile(id:String,path:String,hash:String){writableDatabase.update("sources",ContentValues().apply{put("path",path);put("sha256",hash)},"id=?",arrayOf(id))}
+    /** A table is never embedded: it counts as indexed as soon as it is in. */
+    fun markIndexed(id:String){writableDatabase.update("sources",ContentValues().apply{put("indexed",1);put("error","")},"id=?",arrayOf(id))}
+    fun sha256Of(id:String):String?=readableDatabase.rawQuery("SELECT sha256 FROM sources WHERE id=?",arrayOf(id)).use{if(it.moveToFirst())it.getString(0) else null}
+
+    // ---- Indexed packs: a folder of files plus PACK_DB, its index made on a computer ----
+    /**
+     * Loads a pack's ready-made index, so its files are indexed without the model when their turn comes. The pack must
+     * have been made for this exact index (same model file, same splitting): otherwise nothing is loaded and it says
+     * why. Files whose chunks aren't all embedded are left out and get indexed on the phone as usual. Returns how many
+     * files came ready.
+     */
+    fun importPrebuilt(pack:File):Int{
+        SQLiteDatabase.openDatabase(pack.path,null,SQLiteDatabase.OPEN_READONLY).use{p->
+            fun meta(name:String)=p.rawQuery("SELECT value FROM meta WHERE name=?",arrayOf(name)).use{if(it.moveToFirst())it.getString(0) else ""}
+            require(meta("index_version")==GemmaEmbedder.INDEX_VERSION){tr("This pack was indexed for another version of the app (${meta("index_version").take(60)}). Make it again.","Este paquete se indexó para otra versión de la app (${meta("index_version").take(60)}). Vuelve a crearlo.")}
+            require(meta("model_sha256")==GemmaEmbedder.MODEL_SHA256){tr("This pack was embedded with a different model file. Make it again with the app's EmbeddingGemma 2 file.","Este paquete se hizo con otro archivo de modelo. Vuelve a crearlo con el archivo EmbeddingGemma 2 de la app.")}
+        }
+        val db=writableDatabase
+        db.execSQL("ATTACH DATABASE ? AS pack",arrayOf(pack.path))
+        try{
+            return db.inTransaction{
+                val ready="SELECT f.sha256 FROM pack.files f WHERE f.error='' AND EXISTS (SELECT 1 FROM pack.chunks c WHERE c.sha256=f.sha256) AND NOT EXISTS (SELECT 1 FROM pack.chunks c WHERE c.sha256=f.sha256 AND (c.vector IS NULL OR length(c.vector)<>${DIMENSIONS*4}))"
+                execSQL("INSERT OR REPLACE INTO prebuilt_files(sha256,pages,no_text_pages) SELECT sha256,pages,no_text_pages FROM pack.files WHERE sha256 IN ($ready)")
+                execSQL("INSERT OR REPLACE INTO prebuilt_chunks(sha256,ordinal,page,start_ms,text,vector) SELECT sha256,ordinal,page,start_ms,text,vector FROM pack.chunks WHERE sha256 IN ($ready)")
+                rawQuery("SELECT COUNT(*) FROM ($ready)",null).use{it.moveToFirst();it.getInt(0)}
+            }
+        }finally{db.execSQL("DETACH DATABASE pack")}
+    }
+    /** [s]'s chunks from an indexed pack, when its contents match one; null to index it with the model. */
+    fun prebuilt(s:Source):Engine.Encoded?{
+        val db=readableDatabase
+        val hash=db.rawQuery("SELECT sha256 FROM sources WHERE id=?",arrayOf(s.id)).use{if(it.moveToFirst())it.getString(0) else null}?:return null
+        val (pages,noText)=db.rawQuery("SELECT pages,no_text_pages FROM prebuilt_files WHERE sha256=?",arrayOf(hash)).use{if(it.moveToFirst())it.getInt(0) to it.getInt(1) else null}?:return null
+        val chunks=db.rawQuery("SELECT ordinal,page,start_ms,text,vector FROM prebuilt_chunks WHERE sha256=? ORDER BY ordinal",arrayOf(hash)).use{c->
+            buildList{while(c.moveToNext()){val b=ByteBuffer.wrap(c.getBlob(4)).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer();val v=FloatArray(b.remaining()).also{b.get(it)}
+                add(VectorChunk(s.id,c.getInt(0),c.getInt(1),c.getInt(2),c.getString(3),v))}}}
+        if(chunks.isEmpty())return null
+        return Engine.Encoded(chunks,pages,noText)
+    }
+    /** Drops [s]'s ready-made chunks once they are in the index. */
+    fun dropPrebuilt(s:Source){
+        writableDatabase.execSQL("DELETE FROM prebuilt_files WHERE sha256=(SELECT sha256 FROM sources WHERE id=?)",arrayOf(s.id))
+    }
+    /** How many files are waiting with a ready-made index. */
+    fun prebuiltCount():Int=readableDatabase.rawQuery("SELECT COUNT(*) FROM prebuilt_files",null).use{it.moveToFirst();it.getInt(0)}
     fun error(id:String,message:String){writableDatabase.update("sources",ContentValues().apply{put("error",message.take(250))},"id=?",arrayOf(id))}
 
     /**
@@ -194,7 +252,7 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
     /** Remove a project's sources, their search index, graph and the app's private copies of their files. Returns the source count. */
     fun deleteProject(project:String):Int{
         val doomed=sources(project)
-        writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("graph_schemas","building=?",arrayOf(project));delete("decisions","building=?",arrayOf(project));delete("reports","building=?",arrayOf(project));delete("action_runs","building=?",arrayOf(project));delete("tag_rules","building=?",arrayOf(project));delete("tags","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_aliases","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
+        writableDatabase.inTransaction{delete("import_queue","building=?",arrayOf(project));delete("graph_schemas","building=?",arrayOf(project));delete("decisions","building=?",arrayOf(project));delete("reports","building=?",arrayOf(project));delete("action_runs","building=?",arrayOf(project));delete("tag_rules","building=?",arrayOf(project));delete("tags","building=?",arrayOf(project));delete("graph_review","building=?",arrayOf(project));delete("graph_aliases","building=?",arrayOf(project));delete("history","building=?",arrayOf(project));delete("memories","building=?",arrayOf(project));delete("graph_nodes","building=?",arrayOf(project));delete("sources","building=?",arrayOf(project))}
         indexChanged()
         doomed.forEach{deleteCopy(it.path)}
         return doomed.size
@@ -256,7 +314,7 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
         /** How many chunks Jev judges when reranking; the best [PASSAGES] of them go to the answer. */
         const val RERANK_CANDIDATES=20
         /** Graph nodes exist only to be linked, so a deleted source also takes the nodes it leaves with no links. */
-        private const val DELETE_UNLINKED_NODES="DELETE FROM graph_nodes WHERE building=? AND NOT EXISTS (SELECT 1 FROM graph_edges e WHERE e.from_id=graph_nodes.id OR e.to_id=graph_nodes.id)"
+        private const val DELETE_UNLINKED_NODES="DELETE FROM graph_nodes WHERE building=? AND NOT EXISTS (SELECT 1 FROM graph_edges e WHERE e.from_id=graph_nodes.id OR e.to_id=graph_nodes.id) AND NOT EXISTS (SELECT 1 FROM graph_values v WHERE v.node_id=graph_nodes.id)"
         val MIGRATIONS:List<List<String>> = listOf(
             listOf(
                 "CREATE TABLE sources(id TEXT PRIMARY KEY,path TEXT NOT NULL,type TEXT NOT NULL,building TEXT NOT NULL,asset TEXT,date TEXT,title TEXT,synthetic INTEGER,indexed INTEGER DEFAULT 0,error TEXT DEFAULT '',sha256 TEXT NOT NULL)",
@@ -345,9 +403,39 @@ class Store(private val context:Context,name:String?="proasiste.db"):SQLiteOpenH
             listOf(
                 "CREATE TABLE graph_aliases(building TEXT NOT NULL,source TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,key TEXT NOT NULL,type TEXT NOT NULL,name TEXT NOT NULL,PRIMARY KEY(building,source,key))",
             ),
+            // 12: column values on graph nodes (a ruling's date, outcome, judges…), each from one file and page. [num] is
+            // the value as a number for sorting and comparing: the number itself, a date as yyyymmdd. [origin] says
+            // what wrote it ("reglas" for the ruling skeleton), so each writer replaces only its own values.
+            listOf(
+                "CREATE TABLE graph_values(id INTEGER PRIMARY KEY,node_id INTEGER NOT NULL REFERENCES graph_nodes(id) ON DELETE CASCADE,col TEXT NOT NULL,value TEXT NOT NULL,num REAL,source TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,page INTEGER NOT NULL DEFAULT 0,origin TEXT NOT NULL)",
+                "CREATE INDEX graph_values_node ON graph_values(node_id,col)",
+                "CREATE INDEX graph_values_source ON graph_values(source,origin)",
+            ),
+            // 13: a ready-made index for files on their way in, made on a computer with the same model and split the same
+            // way (an indexed pack). Keyed by the file's SHA-256: when a file with those contents is indexed, its chunks
+            // come from here instead of the model, and the rows are dropped.
+            listOf(
+                "CREATE TABLE prebuilt_files(sha256 TEXT PRIMARY KEY,pages INTEGER NOT NULL,no_text_pages INTEGER NOT NULL)",
+                "CREATE TABLE prebuilt_chunks(sha256 TEXT NOT NULL REFERENCES prebuilt_files(sha256) ON DELETE CASCADE,ordinal INTEGER NOT NULL,page INTEGER NOT NULL,start_ms INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(sha256,ordinal))",
+            ),
+            // 14: how an imported table (a source of type "table") maps onto the graph: its type, name column and
+            // columns, as TableMap JSON, so importing the same file again re-syncs it the same way.
+            listOf(
+                "CREATE TABLE table_maps(source TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,json TEXT NOT NULL)",
+            ),
+            // 15: memory. history: every answered question with its answer, writer, sources (JSON) and what was done next
+            // (sources opened, the report it became). memories: notes the person keeps for answers, for one project or,
+            // with no building, every project.
+            listOf(
+                "CREATE TABLE history(id INTEGER PRIMARY KEY,building TEXT NOT NULL,question TEXT NOT NULL,answer TEXT NOT NULL,writer TEXT NOT NULL,sources TEXT NOT NULL,opened TEXT NOT NULL DEFAULT '',report_id INTEGER,created INTEGER NOT NULL)",
+                "CREATE INDEX history_building ON history(building,created)",
+                "CREATE TABLE memories(id INTEGER PRIMARY KEY,building TEXT,kind TEXT NOT NULL,text TEXT NOT NULL,created INTEGER NOT NULL)",
+            ),
         )
         private val SOURCE_COLUMNS=arrayOf("id","path","type","building","asset","date","title","synthetic","indexed","error","pages","no_text_pages")
         /** Import queue statuses. */
+        /** The file at the top of an indexed pack folder that holds its ready-made index. */
+        const val PACK_DB="proasiste-index.db"
         const val QUEUED="pendiente"; const val IMPORTED="importado"; const val DUPLICATE="duplicado"; const val FAILED="fallido"
         private val STOP=setOf("the","and","for","are","how","what","when","where","which","who","why","does","do","did","can","you","your","with","this","that","from","into","about","have","has","was","were","will","should","there","they","them","a","an","of","to","in","on","is","it","be","or","as","at","by","if","i","my","me",
             "el","la","los","las","un","una","unos","unas","de","del","que","y","en","por","para","con","como","cual","cuando","donde","es","son","se","su","sus","al","lo","le","les","mi","yo","no","si","o")

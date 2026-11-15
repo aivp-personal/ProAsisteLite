@@ -1,7 +1,7 @@
 package com.proasiste.lite.ui
 
 enum class UiKind(private val en: String, private val es: String) {
-    PHOTO("Photo", "Foto"), AUDIO("Voice note", "Nota de voz"), REPORT("Report", "Informe");
+    PHOTO("Photo", "Foto"), AUDIO("Voice note", "Nota de voz"), REPORT("Report", "Informe"), TABLE("Table", "Tabla");
     val label: String get() = tr(en, es)
 }
 
@@ -95,6 +95,12 @@ data class UiAnswer(
     val check: UiCitationCheck? = null,
     /** Listed directly from the project graph, with no model writing it. */
     val fromGraph: Boolean = false,
+    /** Counted, listed or grouped from this table's columns ("Fallo"), with no model; empty otherwise. */
+    val fromTable: String = "",
+    /** An instruction found in the question ("responde en español"), offered to keep as a note; empty when none. */
+    val suggestNote: String = "",
+    /** How many of the person's notes went with the question. */
+    val notesUsed: Int = 0,
     /** Who wrote it: "Gemini Nano" or the OpenRouter model's name. */
     val writer: String = "Gemini Nano",
     /** Written by an OpenRouter model, so the question and passages left the phone. */
@@ -147,7 +153,42 @@ data class UiPageStatus(val pending: Int = 0, val facts: Int = 0, val unchecked:
  * The graph on screen: the whole project, or one file when [sourceId] is set. [picture] is null while it is laid out.
  * [titles] names each file by source id, for the facts' "where it says so".
  */
-data class UiGraph(val title: String, val sourceId: String? = null, val picture: com.proasiste.lite.graph.GraphPicture? = null, val titles: Map<String, String> = emptyMap())
+/**
+ * A table on its way in: the file, its sheets, the one chosen, the proposed mapping the person confirms or edits, each
+ * column's sample values, the types already in the graph (for links), and what stops it going in.
+ */
+data class UiTableImport(
+    val fileName: String,
+    val sheets: List<String>,
+    val sheet: Int,
+    val map: com.proasiste.lite.graph.TableMap,
+    val rows: Int,
+    val samples: Map<Int, List<String>>,
+    val types: List<String>,
+    val problems: List<String>,
+    /** The file was imported before: importing it again re-syncs that table. */
+    val replacing: Boolean = false,
+)
+
+/** An answered question in the project's history. */
+data class UiHistory(val id: Long, val question: String, val answer: String, val writer: String, val date: String, val sources: Int, val opened: Int, val report: Boolean)
+/** A note for answers: [allProjects] when it goes with every project's questions. */
+data class UiNote(val id: Long, val text: String, val fact: Boolean, val allProjects: Boolean)
+
+/** A type's table: one row per node with its column values, and where each row opens. */
+data class UiTable(
+    val type: String,
+    val columns: List<String> = emptyList(),
+    val rows: List<UiTableRow> = emptyList(),
+    /** Reading columns from the files is running. */
+    val filling: Boolean = false,
+    val note: String = "",
+)
+data class UiTableRow(val name: String, val sourceId: String, val page: Int, val cells: List<String>)
+
+data class UiGraph(val title: String, val sourceId: String? = null, val picture: com.proasiste.lite.graph.GraphPicture? = null, val titles: Map<String, String> = emptyMap(),
+    /** Each name's column values, by its key: (column, value). */
+    val values: Map<String, List<Pair<String, String>>> = emptyMap())
 
 /** A background import or indexing run: the app stays usable meanwhile. [pausing] once Pause was tapped. */
 data class UiIndexing(val label: String, val progress: Float, val pausing: Boolean = false)
@@ -215,6 +256,23 @@ data class UiState(
     val openReport: UiReport? = null,
     /** The graph open on screen. */
     val graph: UiGraph? = null,
+    /** The tables this project has, as (type, rows), commonest first. */
+    val tables: List<Pair<String, Int>> = emptyList(),
+    /** The table open on screen. */
+    val table: UiTable? = null,
+    /** A table file being mapped before import. */
+    val tableImport: UiTableImport? = null,
+    /** The project's history, when its screen is open. */
+    val history: List<UiHistory>? = null,
+    val historyQuery: String = "",
+    val historyCount: Int = 0,
+    /** The person's notes for this project and for every project. */
+    val notes: List<UiNote> = emptyList(),
+    val memoryOpen: Boolean = false,
+    /** Requests asked again and again, offered as skills. */
+    val habits: List<String> = emptyList(),
+    /** Where the last search's time went, for the retrieval budget. */
+    val timing: String = "",
     /** The latest decision on each file of this project, by source id. */
     val fileDecisions: Map<String, UiDecision> = emptyMap(),
     /** A file waiting for the user to choose where to save it. */
@@ -265,6 +323,8 @@ data class UiActions(
     val onSchemaMode: (String) -> Unit = {},
     val onAddNodeType: (String, String) -> Unit = { _, _ -> },
     val onRemoveNodeType: (String) -> Unit = {},
+    val onAddColumn: (String, String, com.proasiste.lite.graph.ColumnKind) -> Unit = { _, _, _ -> },
+    val onRemoveColumn: (String, String) -> Unit = { _, _ -> },
     /** Adds a link type (name, description, from types, to types). */
     val onAddLinkType: (String, String, Set<String>, Set<String>) -> Unit = { _, _, _, _ -> },
     val onRemoveLinkType: (String) -> Unit = {},
@@ -295,6 +355,33 @@ data class UiActions(
     val onDeleteSkill: (Long) -> Unit = {},
     /** Shows the project's graph, or one file's when a source id is given. */
     val onOpenGraph: (String?) -> Unit = {},
+    val onOpenTable: () -> Unit = {},
+    val onOpenHistory: () -> Unit = {},
+    val onCloseHistory: () -> Unit = {},
+    val onSearchHistory: (String) -> Unit = {},
+    val onReopenHistory: (Long) -> Unit = {},
+    val onDeleteHistory: (Long) -> Unit = {},
+    val onClearHistory: () -> Unit = {},
+    val onOpenMemory: () -> Unit = {},
+    val onCloseMemory: () -> Unit = {},
+    /** Adds a note: its text, whether it is a fact (else a preference), and whether it goes with every project. */
+    val onAddNote: (String, Boolean, Boolean) -> Unit = { _, _, _ -> },
+    val onEditNote: (Long, String) -> Unit = { _, _ -> },
+    val onDeleteNote: (Long) -> Unit = {},
+    /** Keeps the answer's suggested note, for this project or every project. */
+    val onAcceptNote: (Boolean) -> Unit = {},
+    val onDismissNote: () -> Unit = {},
+    val onShowTable: (String) -> Unit = {},
+    val onExportTable: () -> Unit = {},
+    val onImportTable: () -> Unit = {},
+    val onTableSheet: (Int) -> Unit = {},
+    val onTableMap: (com.proasiste.lite.graph.TableMap) -> Unit = {},
+    val onConfirmTableImport: () -> Unit = {},
+    val onCancelTableImport: () -> Unit = {},
+    val onCloseTable: () -> Unit = {},
+    /** Reads the rulings' columns from the project's PDFs, on the phone. */
+    val onFillColumns: () -> Unit = {},
+    val onOpenTableRow: (UiTableRow) -> Unit = {},
     val onCloseGraph: () -> Unit = {},
     /** Merges names (graph keys) into the one to keep, in the files that mention it; the merge survives rebuilds. */
     val onMergeNames: (String, List<String>) -> Unit = { _, _ -> },

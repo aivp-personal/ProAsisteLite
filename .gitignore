@@ -20,3 +20,9 @@ tap-hose-photos.zip
 # Signing keys never go in the repo
 *.jks
 *.keystore
+
+# Desktop indexing environment
+desktop/.venv/
+desktop/packs/
+desktop/models/
+desktop/data/

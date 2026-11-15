@@ -315,13 +315,34 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                 val answer = state.answer
                 if (searching && answer != null) item {
                     AnswerCard(answer, incognito = state.projects.firstOrNull { it.id == state.buildingId }?.incognito == true,
-                        onSource = { inspector = it }, onShare = actions.onShareAnswer, onSave = actions.onSaveAnswer)
+                        onSource = { inspector = it }, onShare = actions.onShareAnswer, onSave = actions.onSaveAnswer, onAcceptNote = actions.onAcceptNote, onDismissNote = actions.onDismissNote)
+                    if (state.timing.isNotEmpty()) Text(state.timing, color = Muted, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 24.dp, vertical = 2.dp).testTag("plantroom.timing"))
                 }
                 if (showEvidence && !searching) item {
                     // Saved answers and notes: their own row, like the graph review.
                     Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).background(Steel, RoundedCornerShape(14.dp))
                         .clickable(enabled = !locked) { reportsSheet = true }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.reports-row"), verticalAlignment = Alignment.CenterVertically) {
                         Text(tr("Reports · ${state.reports.size}", "Informes · ${state.reports.size}"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Glyph("arrow", Gold, Modifier.size(14.dp))
+                    }
+                }
+                if (showEvidence && !searching) item {
+                    // What was asked here before, and the notes that go with every answer.
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(Modifier.weight(1f).background(Steel, RoundedCornerShape(14.dp)).clickable(enabled = !locked) { actions.onOpenHistory() }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.history-row"), verticalAlignment = Alignment.CenterVertically) {
+                            Text(tr("History · ${state.historyCount}", "Historial · ${state.historyCount}"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f)); Glyph("arrow", Gold, Modifier.size(14.dp))
+                        }
+                        Row(Modifier.weight(1f).background(Steel, RoundedCornerShape(14.dp)).clickable(enabled = !locked) { actions.onOpenMemory() }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.memory-row"), verticalAlignment = Alignment.CenterVertically) {
+                            Text(tr("Notes · ${state.notes.size}", "Notas · ${state.notes.size}"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f)); Glyph("arrow", Gold, Modifier.size(14.dp))
+                        }
+                    }
+                }
+                if (showEvidence && !searching && (state.reportCount > 0 || state.tables.isNotEmpty())) item {
+                    // The project's table: rulings with their date, outcome, judges… read from the files.
+                    val rows = state.tables.firstOrNull()?.second ?: 0
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).background(Steel, RoundedCornerShape(14.dp))
+                        .clickable(enabled = !locked) { actions.onOpenTable() }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.table-row"), verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (rows > 0) tr("Tables · ${state.tables.joinToString(" · ") { "${it.first} ${it.second}" }}", "Tablas · ${state.tables.joinToString(" · ") { "${it.first} ${it.second}" }}") else tr("Rulings table · read from files", "Tabla de fallos · leer de los archivos"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                         Glyph("arrow", Gold, Modifier.size(14.dp))
                     }
                 }
@@ -424,6 +445,10 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         if (actionsSheet) ActionsSheet(state, actions, onClose = { actionsSheet = false })
         state.openReport?.let { r -> ReportScreen(r, state, actions, onOpenSource = actions.onOpenSource) }
         state.graph?.let { GraphScreen(it, actions) }
+        state.table?.let { TableScreen(it, state.tables, actions) }
+        state.history?.let { HistoryScreen(it, state.historyQuery, actions) }
+        if (state.memoryOpen) MemoryScreen(state.notes, state.projects.firstOrNull { it.id == state.buildingId }?.incognito == true, actions)
+        state.tableImport?.let { TableImportDialog(it, actions) }
 
         if (buildings) ModalBottomSheet(onDismissRequest = { buildings = false }, containerColor = Steel) {
             SheetHeader(tr("Projects", "Proyectos"), tr("Choose the project you're working in.", "Elige el proyecto en el que trabajas."))
@@ -510,6 +535,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
             SheetHeader(tr("Add evidence", "Agregar evidencia"), tr("Saved to $buildingName on this phone.", "Se guarda en $buildingName en este teléfono."))
             ActionRow(tr("Take a photo", "Tomar una foto"), tr("Save a new observation to this project", "Guarda una nueva observación en este proyecto"), "image", enabled = !locked) { capture = false; navigate(true); actions.onCapturePhoto() }
             ActionRow(tr("Import files", "Importar archivos"), tr("Photos, PDF reports and short recordings", "Fotos, informes PDF y grabaciones cortas"), "plus", enabled = !locked) { capture = false; navigate(true); actions.onImportFiles() }
+            ActionRow(tr("Import a table", "Importar una tabla"), tr("A CSV or Excel (.xlsx) list, such as rulings with their dates and outcomes: each row joins the graph", "Una lista CSV o Excel (.xlsx), como fallos con sus fechas y resultados: cada fila se une al grafo"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportTable() }
             ActionRow(tr("Import a folder", "Importar una carpeta"), tr("Every PDF, photo and recording in it and its subfolders, imported and indexed in the background", "Todos los PDF, fotos y grabaciones de la carpeta y sus subcarpetas, importados e indexados en segundo plano"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportFolder() }
             ActionRow(if (state.recording) tr("Stop & save recording", "Detener y guardar grabación") else tr("Record a voice note", "Grabar una nota de voz"), tr("Capture an observation during your visit", "Registra una observación durante tu visita"), "audio", enabled = !state.busy) { capture = false; navigate(true); actions.onRecordAudio() }
             ActionRow(tr("Build graph with DeepSeek", "Construir el grafo con DeepSeek"), tr("Sends this project's PDF text to OpenRouter and DeepSeek with your saved key. Never for incognito projects.", "Envía el texto de los PDF de este proyecto a OpenRouter y DeepSeek con tu clave guardada. Nunca en proyectos incógnito."), "library", enabled = !locked && state.jevKeySaved) { capture = false; navigate(true); actions.onBuildGraph() }
@@ -580,7 +606,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                                 Text(if (state.playingId == item.id) tr("Stop recording playback", "Detener reproducción") else tr("Play original recording", "Reproducir grabación original"))
                             }
                         } else Button(onClick = { actions.onOpenSource(item) }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp)) {
-                            Text(if (item.kind == UiKind.REPORT) tr("Open original report", "Abrir informe original") else tr("Open original photo", "Abrir foto original")); Spacer(Modifier.width(9.dp)); Glyph("arrow", Ink, Modifier.size(18.dp))
+                            Text(when (item.kind) { UiKind.REPORT -> tr("Open original report", "Abrir informe original"); UiKind.TABLE -> tr("Open its table", "Abrir su tabla"); else -> tr("Open original photo", "Abrir foto original") }); Spacer(Modifier.width(9.dp)); Glyph("arrow", Ink, Modifier.size(18.dp))
                         }
                         Spacer(Modifier.height(22.dp))
                         SourceTags(state.tagsBySource[item.id].orEmpty(), state.tagCounts.map { it.name }, enabled = !locked,
@@ -852,12 +878,13 @@ private fun CitationCheck(check: UiCitationCheck, onSource: (UiItem) -> Unit) {
 }
 
 @Composable
-private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) -> Unit, onShare: () -> Unit, onSave: () -> Unit = {}) {
+private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) -> Unit, onShare: () -> Unit, onSave: () -> Unit = {}, onAcceptNote: (Boolean) -> Unit = {}, onDismissNote: () -> Unit = {}) {
     val notFound = answer.text.trim().startsWith("NOT_FOUND")
     val cited = JevClient.cites(answer.text).filter { it in 1..answer.sources.size }.sorted()
     Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 6.dp)
         .background(Steel, RoundedCornerShape(14.dp)).padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.answer")) {
         Eyebrow(when {
+            answer.fromTable.isNotEmpty() -> tr("Answer · counted from the rulings table", "Respuesta · contada en la tabla de fallos")
             answer.fromGraph -> tr("Answer · from the project graph", "Respuesta · del grafo del proyecto")
             answer.cloud -> tr("Answer · ${answer.writer} via OpenRouter", "Respuesta · ${answer.writer} vía OpenRouter")
             else -> tr("Answer · Gemini Nano on this phone", "Respuesta · Gemini Nano en este teléfono")
@@ -877,6 +904,19 @@ private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) 
         if (flagged == null) answer.check?.let { CitationCheck(it, onSource) }
         if (answer.writerNote.isNotBlank()) { Spacer(Modifier.height(8.dp)); Text(answer.writerNote, color = if (answer.writerFailed) Warning else Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.testTag("plantroom.writer-note")) }
         if (answer.jevNote.isNotBlank()) { Spacer(Modifier.height(8.dp)); Text(answer.jevNote, color = if (answer.jevFailed) Warning else Muted, fontSize = 11.sp, lineHeight = 16.sp) }
+        if (answer.notesUsed > 0) { Spacer(Modifier.height(6.dp)); Text(tr("${answer.notesUsed} of your notes went with the question", "${answer.notesUsed} de tus notas acompañaron la pregunta"), color = Muted, fontSize = 11.sp, modifier = Modifier.testTag("plantroom.notes-used")) }
+        // An instruction found in the question, offered to keep for later answers. Kept only on a yes.
+        if (answer.suggestNote.isNotEmpty() && !answer.working) {
+            Spacer(Modifier.height(10.dp))
+            Column(Modifier.fillMaxWidth().background(Ink, RoundedCornerShape(10.dp)).padding(12.dp).testTag("plantroom.note-suggestion")) {
+                Text(tr("Remember “${answer.suggestNote}” for later answers?", "¿Recordar «${answer.suggestNote}» para las próximas respuestas?"), color = Mist, fontSize = 13.sp, lineHeight = 18.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { onAcceptNote(false) }) { Text(tr("This project", "Este proyecto"), color = Gold, fontSize = 12.sp) }
+                    if (!incognito) TextButton(onClick = { onAcceptNote(true) }) { Text(tr("All projects", "Todos los proyectos"), color = Gold, fontSize = 12.sp) }
+                    TextButton(onClick = onDismissNote) { Text(tr("No", "No"), color = Muted, fontSize = 12.sp) }
+                }
+            }
+        }
         if (!answer.working && !notFound && answer.text.isNotBlank()) {
             Spacer(Modifier.height(10.dp))
             (cited.ifEmpty { (1..answer.sources.size).toList() }).forEach { n ->
@@ -888,7 +928,7 @@ private fun AnswerCard(answer: UiAnswer, incognito: Boolean, onSource: (UiItem) 
                 }
             }
             Spacer(Modifier.height(6.dp))
-            Text(if (answer.fromGraph) tr("Listed from the project graph, whose facts were extracted by AI. Check the cited pages.", "Lista del grafo del proyecto, cuyos datos fueron extraídos por IA. Revisa las páginas citadas.") else tr("Written by AI from your files. Check the cited pages.", "Escrito por IA a partir de tus archivos. Revisa las páginas citadas."), fontFamily = NotoSerif, color = Muted, fontSize = 11.sp)
+            Text(if (answer.fromTable.isNotEmpty()) tr("Counted by the app from columns its rules read in each ruling, with no AI. Check the cited pages.", "Contado por la app a partir de columnas que sus reglas leyeron en cada fallo, sin IA. Revisa las páginas citadas.") else if (answer.fromGraph) tr("Listed from the project graph, whose facts were extracted by AI. Check the cited pages.", "Lista del grafo del proyecto, cuyos datos fueron extraídos por IA. Revisa las páginas citadas.") else tr("Written by AI from your files. Check the cited pages.", "Escrito por IA a partir de tus archivos. Revisa las páginas citadas."), fontFamily = NotoSerif, color = Muted, fontSize = 11.sp)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onShare, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("plantroom.share-answer")) {
                     if (incognito) { Glyph("incognito-on", Gold, Modifier.size(16.dp)); Spacer(Modifier.width(7.dp)) }

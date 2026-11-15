@@ -43,6 +43,15 @@ object FolderImport {
         return out
     }
 
+    /** The file called [name] at the top of [tree], or null. */
+    fun topFile(context:Context,tree:Uri,name:String):Uri?{
+        val columns=arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+        context.contentResolver.query(DocumentsContract.buildChildDocumentsUriUsingTree(tree,DocumentsContract.getTreeDocumentId(tree)),columns,null,null,null)?.use{c->
+            while(c.moveToNext())if(c.getString(1)==name)return DocumentsContract.buildDocumentUriUsingTree(tree,c.getString(0))
+        }
+        return null
+    }
+
     /** "pdf", "image", "audio", or null for a file the app can't index. */
     fun typeOf(mime:String,name:String):String?=when{
         mime=="application/pdf"||name.endsWith(".pdf",true)->"pdf"

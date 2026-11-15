@@ -38,6 +38,10 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     val store=engine.store
     val embedder=engine.embedder
     private val graph=com.proasiste.lite.graph.Graph(store)
+    private val columns=com.proasiste.lite.graph.GraphColumns(store,graph)
+    private val memory=com.proasiste.lite.memory.Memory(store)
+    /** The history entry of the answer on screen, so opening its sources or saving it is remembered with it. */
+    private var historyId=0L
     private val tags=com.proasiste.lite.tags.Tags(store)
     // Declared before init: refresh() runs during construction and reads them.
     private val reports=com.proasiste.lite.reports.Reports(store)
@@ -155,6 +159,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         viewModelScope.launch{
             val id=withContext(worker){reports.save(com.proasiste.lite.reports.Report(0,building,question.take(120).ifEmpty{tr("Answer","Respuesta")},question,a.text.trim(),model,passages,0,0))}
             openReportId=id;refreshReports()
+            historyId.takeIf{it!=0L}?.let{h->withContext(worker){memory.savedAsReport(h,id)}}
             state=state.copy(status=tr("Saved as a report in the Library","Guardado como informe en la Biblioteca"))
         }
     }
@@ -168,10 +173,152 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         state=state.copy(graph=UiGraph(title,sourceId))
         viewModelScope.launch{
             val picture=withContext(Dispatchers.Default){com.proasiste.lite.graph.GraphPicture.build(withContext(worker){graph.view(project,sourceId)})}
-            if(state.graph?.sourceId==sourceId&&state.buildingId==project)state=state.copy(graph=state.graph?.copy(picture=picture,titles=sources.associate{it.id to it.title}))
+            val values=withContext(worker){columns.types(project).flatMap{(t,_)->columns.rows(project,t,links=false)}.groupBy({it.node.key},{r->r.cells.flatMap{(c,cs)->cs.map{c to it.value}}}).mapValues{it.value.flatten()}}
+            if(state.graph?.sourceId==sourceId&&state.buildingId==project)state=state.copy(graph=state.graph?.copy(picture=picture,titles=sources.associate{it.id to it.title},values=values))
         }
     }
     fun closeGraph(){state=state.copy(graph=null)}
+    // ---- Tables: column values on graph nodes (step 7) ----
+    /** The table a project shows: rulings for now, the only type whose columns are read. */
+    private fun tableType()=state.tables.firstOrNull()?.first?:com.proasiste.lite.runtime.RulingColumns.TYPE
+    fun openTable(type:String?=null){val t=type?:tableType();state=state.copy(table=UiTable(t));loadTable(t)}
+    /** The columns nodes of [type] have: those the project's graph types declare, plus those of every table imported as [type]. */
+    private fun defsOf(project:String,type:String):List<com.proasiste.lite.graph.ColumnDef> =
+        (store.graphSchema(project).columnsOf(type)+store.tableMaps(project).filter{it.second.type==type}.flatMap{it.second.defs}+columns.linkColumns(project,type)).distinctBy{it.name}
+    fun closeTable(){state=state.copy(table=null)}
+    private fun loadTable(type:String,note:String?=null){
+        val project=state.buildingId
+        viewModelScope.launch{
+            val (defs,rows)=withContext(worker){defsOf(project,type) to columns.rows(project,type)}
+            val names=defs.map{it.name}
+            val ui=rows.sortedWith(compareByDescending<com.proasiste.lite.graph.TableRow>{r->r.first(com.proasiste.lite.runtime.RulingColumns.DATE)?.num?:0.0}.thenBy{it.node.name}).map{r->
+                UiTableRow(r.node.name,r.sourceId,r.first(com.proasiste.lite.runtime.RulingColumns.DATE)?.page?:1,names.map{c->r.values(c).joinToString("; ")})
+            }
+            val t=state.table
+            if(t!=null&&t.type==type&&state.buildingId==project)state=state.copy(table=t.copy(columns=names,rows=ui,note=note?:t.note))
+            state=state.copy(tables=withContext(worker){columns.types(project)})
+        }
+    }
+    /**
+     * Reads each indexed PDF's columns with the ruling skeleton, on the phone and with no model, so the table can count,
+     * list and group. Files read before are read again only when [again]. A file that isn't a ruling is skipped.
+     */
+    fun fillColumns(again:Boolean=false){
+        val t=state.table?:return
+        if(t.filling)return
+        val project=state.buildingId
+        state=state.copy(table=t.copy(filling=true,note=tr("Reading the rulings…","Leyendo los fallos…")))
+        viewModelScope.launch{
+            var read=0;var rulings=0;var failed=0
+            try{
+                val done=if(again)emptySet() else withContext(worker){columns.sourcesDone(project,com.proasiste.lite.runtime.RulingColumns.ORIGIN)}
+                val pdfs=withContext(worker){store.sources(project)}.filter{it.type=="pdf"&&it.indexed&&it.id !in done}
+                for(s in pdfs){
+                    if(state.table==null||state.buildingId!=project)break
+                    val found=withContext(Dispatchers.Default){runCatching{com.proasiste.lite.runtime.RulingColumns.of(graphText(s).pages,s.title)}}
+                    found.onFailure{failed++}
+                    found.getOrNull()?.let{(name,values)->withContext(worker){columns.replace(project,s.id,com.proasiste.lite.runtime.RulingColumns.ORIGIN,com.proasiste.lite.runtime.RulingColumns.TYPE,name,com.proasiste.lite.runtime.RulingColumns.DEFS,values)};rulings++}
+                    read++
+                    state.table?.let{state=state.copy(table=it.copy(note=tr("Read $read of ${pdfs.size} files · $rulings rulings","Leídos $read de ${pdfs.size} archivos · $rulings fallos")))}
+                }
+                val note=if(pdfs.isEmpty())tr("Every indexed PDF has been read.","Todos los PDF indexados ya se leyeron.")
+                    else tr("Read ${pdfs.size} files: $rulings rulings${if(failed>0)" · $failed couldn't be read" else ""}. Nothing left this phone.","Se leyeron ${pdfs.size} archivos: $rulings fallos${if(failed>0)" · $failed no se pudieron leer" else ""}. Nada salió de este teléfono.")
+                state.table?.let{state=state.copy(table=it.copy(filling=false,note=note))}
+            }catch(e:CancellationException){throw e}
+            catch(e:Exception){state.table?.let{state=state.copy(table=it.copy(filling=false,note=e.message?.take(200).orEmpty()))}}
+            loadTable(state.table?.type?:return@launch)
+        }
+    }
+    // ---- Importing a table (7b) ----
+    private var tableBytes:ByteArray?=null
+    private var tableSheets:List<com.proasiste.lite.runtime.TableFile.Sheet> = emptyList()
+    /** Reads a picked CSV or .xlsx and proposes how its first sheet maps onto the graph; nothing is written yet. */
+    fun readTable(uri:Uri)=task(tr("Reading the table","Leyendo la tabla")){
+        val project=state.buildingId
+        val name=appContext.contentResolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use{if(it.moveToFirst())it.getString(0) else null}?:"tabla.csv"
+        val bytes=withContext(Dispatchers.IO){appContext.contentResolver.openInputStream(uri)!!.use{copyBoundedBytes(it,50_000_000)}}
+        val sheets=withContext(Dispatchers.Default){com.proasiste.lite.runtime.TableFile.read(name,bytes)}
+        check(sheets.isNotEmpty()){tr("That table is empty.","Esa tabla está vacía.")}
+        tableBytes=bytes;tableSheets=sheets
+        state=state.copy(tableImport=withContext(worker){proposeImport(project,name,0)})
+    }
+    private fun proposeImport(project:String,fileName:String,index:Int,map:com.proasiste.lite.graph.TableMap?=null):UiTableImport{
+        val sheet=tableSheets[index]
+        val known=columns.typeKeys(project)
+        val previous=store.tableMaps(project).firstOrNull{(s,m)->s.title==fileName&&m.sheet==sheet.name}
+        val m=map?:previous?.second?.takeIf{p->p.columns.map{it.header}==com.proasiste.lite.graph.TableImport.measure(sheet).map{it.header}}
+            ?:com.proasiste.lite.graph.TableImport.propose(sheet,fileName,known)
+        val samples=com.proasiste.lite.graph.TableImport.measure(sheet).associate{it.index to it.samples}
+        return UiTableImport(fileName,tableSheets.map{it.name},index,m,sheet.body.size,samples,known.keys.sorted(),
+            com.proasiste.lite.graph.TableImport.problems(sheet,m,!L10n.spanish),previous!=null)
+    }
+    fun chooseTableSheet(i:Int){val t=state.tableImport?:return;if(i !in tableSheets.indices)return
+        viewModelScope.launch{state=state.copy(tableImport=withContext(worker){proposeImport(state.buildingId,t.fileName,i)})}}
+    fun changeTableMap(m:com.proasiste.lite.graph.TableMap){val t=state.tableImport?:return
+        state=state.copy(tableImport=t.copy(map=m,problems=com.proasiste.lite.graph.TableImport.problems(tableSheets[t.sheet],m,!L10n.spanish)))}
+    fun cancelTableImport(){tableBytes=null;tableSheets=emptyList();state=state.copy(tableImport=null)}
+    /**
+     * Imports the mapped sheet: the file is kept as a source of type "table", the mapping is saved with it, and its rows
+     * are written as nodes, values and links in one transaction. The same file imported again re-syncs that table: changed
+     * rows update, new rows arrive, removed rows go. An unchanged file is skipped.
+     */
+    fun confirmTableImport(){
+        val t=state.tableImport?:return;val bytes=tableBytes?:return
+        if(t.problems.isNotEmpty())return
+        val project=state.buildingId;val sheet=tableSheets[t.sheet];val map=t.map
+        state=state.copy(tableImport=null)
+        task(tr("Importing the table","Importando la tabla")){
+            var spelled=0
+            val (written,unchanged)=withContext(worker){
+                val hash=java.security.MessageDigest.getInstance("SHA-256").digest(bytes+sheet.name.toByteArray()+map.toJson().toByteArray()).joinToString(""){"%02x".format(it)}
+                val existing=store.tableMaps(project).firstOrNull{(s,m)->s.title==t.fileName&&m.sheet==sheet.name}?.first
+                if(existing!=null&&store.sha256Of(existing.id)==hash)return@withContext 0 to true
+                val id=existing?.id?:"TABLE-${UUID.randomUUID()}"
+                val f=File(store.library,"$id-${System.currentTimeMillis()}.${t.fileName.substringAfterLast('.',"csv")}").apply{writeBytes(bytes)}
+                if(existing==null){store.add(Source(id,f.path,"table",project,"",java.time.LocalDate.now().toString(),t.fileName,false),hash);store.markIndexed(id)}
+                else{File(existing.path).delete();store.replaceFile(id,f.path,hash)}
+                store.saveTableMap(id,map)
+                // Names spelled another way in the graph ("Daniela Marzi Muñoz" for "Daniela Beatriz Marzi Muñoz") join that node.
+                val (rows,matched)=com.proasiste.lite.graph.SameName.resolve(com.proasiste.lite.graph.TableImport.rowsOf(sheet,map),map.type,columns.typeNames(project))
+                spelled=matched
+                columns.replaceTable(project,id,com.proasiste.lite.graph.TableImport.ORIGIN,map.type,map.defs,rows) to false
+            }
+            tableBytes=null;tableSheets=emptyList()
+            state=state.copy(status=if(unchanged)tr("${t.fileName} hasn't changed since it was imported.","${t.fileName} no ha cambiado desde que se importó.")
+                else tr("${t.fileName}: $written rows in the graph as ${map.type}${if(spelled>0)" · $spelled names joined the graph's spelling" else ""}. Nothing left this phone.","${t.fileName}: $written filas en el grafo como ${map.type}${if(spelled>0)" · $spelled nombres se unieron a como ya estaban en el grafo" else ""}. Nada salió de este teléfono."))
+            if(!unchanged)openTable(map.type)
+        }
+    }
+    /** Saves the open table as an .xlsx file, wherever the person picks. */
+    fun exportTable(){
+        val t=state.table?:return
+        askToSave("${t.type}.xlsx",XLSX){out->com.proasiste.lite.runtime.TableFile.writeXlsx(out,t.type,listOf(t.type)+t.columns,t.rows.map{listOf(it.name)+it.cells})}
+    }
+    /** A row of the table, opened on its file at the page its date was read on. */
+    fun tableRowItem(r:UiTableRow):UiItem?=store.sources(state.buildingId).firstOrNull{it.id==r.sourceId}?.ui(null,r.name,tr("Page ${r.page}","Página ${r.page}"))
+    /** The type words a question must use to be about a table's rows. */
+    private fun typeWords(type:String)=if(type==com.proasiste.lite.runtime.RulingColumns.TYPE)listOf("fallo","sentencia","ruling","case","caso","causa","requerimiento","rol ") else com.proasiste.lite.graph.Graph.keyOf(type).split(" ").filter{it.length>=3}.map{it.take(maxOf(3,it.length-2))}
+    /** A question a table answers by counting, listing or grouping, or null for the normal search. */
+    private fun tableQuestion(question:String):Pair<String,com.proasiste.lite.graph.TableQuestions.Answer>?{
+        val project=state.buildingId
+        for((type,_) in columns.types(project)){
+            val defs=defsOf(project,type).ifEmpty{continue}
+            com.proasiste.lite.graph.TableQuestions.answer(question,type,typeWords(type),columns.rows(project,type),defs,!L10n.spanish)?.let{return type to it}
+        }
+        return null
+    }
+    /** Shows a table's answer: counted or listed by the app from the columns, each row citing the page its value was read on. */
+    private fun tableAnswer(a:com.proasiste.lite.graph.TableQuestions.Answer,type:String){
+        stopAnswer()
+        val all=store.sources(state.buildingId).associateBy{it.id}
+        val sources=a.cited.mapNotNull{(r,col)->
+            val cell=col?.let{r.first(it)}?:r.cells.values.flatten().firstOrNull()
+            val s=all[cell?.sourceId?:r.sourceId]?:return@mapNotNull null
+            s.ui(null,"${r.node.name}${if(col!=null)" · $col: "+r.values(col).joinToString("; ") else ""}",tr("Page ${cell?.page?:1} · table","Página ${cell?.page?:1} · tabla"))
+        }
+        state=state.copy(answer=UiAnswer(text=a.text,sources=sources,working=false,fromGraph=true,fromTable=type))
+        rememberAnswer(state.query)
+    }
     fun mergeNames(keep:String,others:List<String>){
         if(others.isEmpty()||state.busy)return
         val project=state.buildingId;val open=state.graph
@@ -241,7 +388,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     }
 
     // ---- Actions on files ----
-    private fun refreshActions(){state=state.copy(actions=actionsStore.all().map{UiAction(it.key,it.name,it.instructions,it.skillId,it.local)})}
+    private fun refreshActions(){state=state.copy(actions=actionsStore.all().map{UiAction(it.key,it.name,it.instructions,it.skillId,it.local)});refreshMemory()}
     /** A DocLang run waiting for its folder: the action and the files. */
     private var pendingDocLang:Pair<String,List<String>>?=null
     /** The indexed PDFs an action runs on: all of the project's, or those carrying [tag]. */
@@ -305,6 +452,12 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         editSchema{s->s.copy(nodes=s.nodes.filter{it.name!=n}+com.proasiste.lite.graph.NodeType(n,description.trim().take(200)))}
     }
     /** Removes a type and its place in every link; a link left with no type on one side is removed too. */
+    /** Adds a column to one of the project's own types; the next graph build asks the model for its values. */
+    fun addColumn(type:String,name:String,kind:com.proasiste.lite.graph.ColumnKind){
+        val clean=com.proasiste.lite.graph.GraphSchema.cleanType(name);if(clean.isEmpty())return
+        editSchema{s->s.copy(nodes=s.nodes.map{n->if(n.name==type&&n.columns.none{it.name==clean})n.copy(columns=n.columns+com.proasiste.lite.graph.ColumnDef(clean,kind)) else n})}
+    }
+    fun removeColumn(type:String,name:String)=editSchema{s->s.copy(nodes=s.nodes.map{n->if(n.name==type)n.copy(columns=n.columns.filter{it.name!=name}) else n})}
     fun removeNodeType(name:String)=editSchema{s->s.copy(nodes=s.nodes.filter{it.name!=name},
         links=s.links.map{it.copy(from=it.from-name,to=it.to-name)}.filter{it.from.isNotEmpty()&&it.to.isNotEmpty()})}
     fun addLinkType(name:String,description:String,from:Set<String>,to:Set<String>){
@@ -438,7 +591,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         state=state.copy(reviewCount=graph.reviewCount(state.buildingId),docReview=docReview,pageReview=pageReview,totalCount=sources.size,indexedCount=sources.count{it.indexed},photoCount=sources.count{it.type=="image"},audioCount=sources.count{it.type=="audio"},reportCount=sources.count{it.type=="pdf"},
             remainingCount=sources.count{!it.indexed&&!it.needsOcr},scanCount=sources.count{it.needsOcr},queuedCount=store.importCounts(state.buildingId).pending,
             tagsBySource=bySource,tagCounts=tags.counts(state.buildingId).map{(n,c)->UiTagCount(n,c)},
-            graphSchema=store.graphSchema(state.buildingId),
+            graphSchema=store.graphSchema(state.buildingId),tables=columns.types(state.buildingId),
             tagRules=tags.rules(state.buildingId).map{UiTagRule(it.id,it.kind,it.pattern,it.tag)},aiTags=tags.definitions(state.buildingId).map{UiTagDef(it.name,it.description)},
             availableAssetIds=sources.map{it.asset}.distinct().sorted(),items=filterItems(candidates,state.buildingId,state.filters))
         refreshReports();refreshActions()
@@ -480,10 +633,17 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     fun importFolder(tree:Uri)=task(tr("Reading folder", "Leyendo carpeta")){
         val building=state.buildingId
         appContext.contentResolver.takePersistableUriPermission(tree,android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        // An indexed pack: its ready-made index is loaded before the files are queued, so none is embedded twice.
+        val ready=withContext(Dispatchers.IO){FolderImport.topFile(appContext,tree,Store.PACK_DB)?.let{uri->
+            state=state.copy(status=tr("Loading the pack's index","Cargando el índice del paquete"))
+            val copy=File(appContext.cacheDir,Store.PACK_DB)
+            try{appContext.contentResolver.openInputStream(uri)!!.use{input->copy.outputStream().use{input.copyTo(it,1 shl 20)}};store.importPrebuilt(copy)}finally{copy.delete()}
+        }}
         val (found,added)=withContext(Dispatchers.IO){val files=FolderImport.walk(appContext,tree);files.size to store.enqueue(building,files)}
         check(found>0){tr("No PDFs, photos or recordings in that folder.","No hay PDF, fotos ni grabaciones en esa carpeta.")}
         IndexService.start(appContext,building)
-        state=state.copy(query="",isSearching=false,searchMillis=null,status=tr("$found files found, $added new · importing and indexing in the background. You can keep using the app.","$found archivos encontrados, $added nuevos · se importan e indexan en segundo plano. Puedes seguir usando la app."))
+        val packNote=ready?.let{tr(" · $it come with their index ready"," · $it vienen con su índice listo")}.orEmpty()
+        state=state.copy(query="",isSearching=false,searchMillis=null,status=tr("$found files found, $added new$packNote · importing and indexing in the background. You can keep using the app.","$found archivos encontrados, $added nuevos$packNote · se importan e indexan en segundo plano. Puedes seguir usando la app."))
     }
     fun importFiles(uris:List<Uri>)=task(tr("Importing files", "Importando archivos")){
         val building=state.buildingId;var count=0;val errors=mutableListOf<String>()
@@ -519,11 +679,23 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
     fun search() {if(state.query.isBlank()){state=state.copy(isSearching=false);refresh();return};val query=state.query
         task(tr("Searching locally", "Buscando en el teléfono")){
             val start=System.nanoTime()
-            val result=withContext(worker){val vector=embedder.embedText(query,true);val count=if(jevKey()!=null)Store.RERANK_CANDIDATES else Store.PASSAGES
-                withFacts(store.search(vector,state.buildingId,state.totalCount,query,count),vector,query,count)}
-            val listed=withContext(worker){graph.factsWithRelations(state.buildingId,com.proasiste.lite.graph.ListQuestions.relations(query),LIST_LIMIT)}
-            showHits(result.hits,(System.nanoTime()-start)/1_000_000)
-            if(listed.isNotEmpty())listAnswer(listed) else answer(query,result)
+            // The retrieval budget (step 8e): every step before a model starts writing is timed.
+            val t=LongArray(6);fun lap(i:Int,from:Long){t[i]=(System.nanoTime()-from)/1_000_000}
+            val result=withContext(worker){
+                var at=System.nanoTime();val vector=embedder.embedText(query,true);lap(0,at)
+                val count=if(jevKey()!=null)Store.RERANK_CANDIDATES else Store.PASSAGES
+                at=System.nanoTime();val found=store.search(vector,state.buildingId,state.totalCount,query,count);lap(1,at)
+                at=System.nanoTime();val merged=withFacts(found,vector,query,count);lap(2,at);merged}
+            var at=System.nanoTime();val tabled=withContext(worker){tableQuestion(query)};lap(3,at)
+            at=System.nanoTime();val listed=if(tabled!=null)emptyList() else withContext(worker){graph.factsWithRelations(state.buildingId,com.proasiste.lite.graph.ListQuestions.relations(query),LIST_LIMIT)};lap(4,at)
+            at=System.nanoTime();withContext(worker){memory.forPrompt(state.buildingId)};lap(5,at)
+            val total=(System.nanoTime()-start)/1_000_000
+            val timing=tr("$total ms before writing: question ${t[0]} · search ${t[1]} · graph facts ${t[2]} · tables ${t[3]} · lists ${t[4]} · notes ${t[5]}",
+                "$total ms antes de escribir: pregunta ${t[0]} · búsqueda ${t[1]} · datos del grafo ${t[2]} · tablas ${t[3]} · listas ${t[4]} · notas ${t[5]}")
+            android.util.Log.i("ProAsisteTiming","${state.buildingId} total=$total embed=${t[0]} search=${t[1]} facts=${t[2]} tables=${t[3]} lists=${t[4]} notes=${t[5]} chunks=${state.totalCount}")
+            state=state.copy(timing=timing)
+            showHits(result.hits,total)
+            when{tabled!=null->tableAnswer(tabled.second,tabled.first);listed.isNotEmpty()->listAnswer(listed);else->answer(query,result)}
         }
     }
     /**
@@ -569,6 +741,13 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
             // A partial result never replaces a complete one: if a part failed and the file has facts, they stay.
             val keepOld=result.failedParts>0&&withContext(worker){graph.factCounts(project)[s.id]?:0}>0
             if(keepOld)kept++ else added+=withContext(worker){graph.replaceFacts(project,s.id,result.facts.map(::placed)){embedder.embedText(it)}.also{graph.saveReview(project,s.id,result.reviewItems.map{(f,r)->placed(f) to r},result.extractor)}}
+            // Column values the model read for the project's own types: one writer per type, so a rebuild replaces only its own.
+            if(!keepOld&&schema.custom)withContext(worker){
+                for(t in schema.nodes.filter{it.columns.isNotEmpty()}){
+                    val rows=result.values.filter{it.type==t.name}.groupBy{com.proasiste.lite.graph.Graph.keyOf(it.node)}.values.map{vs->com.proasiste.lite.graph.TableRowIn(vs.first().node,vs.first().page,vs.map{com.proasiste.lite.graph.NewValue(it.column,it.value,it.page)},emptyList())}
+                    columns.replaceTable(project,s.id,"modelo:${t.name}",t.name,t.columns,rows)
+                }
+            }
             failed+=result.failedParts
             dropped+=result.dropped;pages+=result.pagesSent.size;cost+=result.cost;review+=result.review;legal+=if(result.legal)1 else 0
         }
@@ -714,6 +893,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         val usable=facts.filter{it.sourceId in all}
         val sources=usable.map{f->all.getValue(f.sourceId).ui(null,f.fact,tr("Page ${f.page} · graph fact","Página ${f.page} · dato del grafo")).copy(highlight=f.place)}
         state=state.copy(answer=UiAnswer(text=usable.withIndex().joinToString("\n"){(i,f)->"${f.fact} [${i+1}]"},sources=sources,working=false,fromGraph=true))
+        rememberAnswer(state.query)
     }
     /** Runs after the search so the list is usable meanwhile: Jev reranks when allowed, Gemini Nano writes a short cited answer, then Jev checks its citations. */
     private fun answer(question:String,result:SearchResult){
@@ -730,6 +910,9 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
             // With Jev on, the answer stays hidden until it's checked, so a sentence that gets removed is never shown.
             val key=jevKey();var written=""
             val given=passages.map{NanoAnswerer.Passage(it.source.title,it.chunk.page,it.chunk.text)}
+            // The person's notes go with the question as instructions, never as passages: they can't be cited.
+            val notes=withContext(worker){memory.forPrompt(state.buildingId)}
+            if(notes.isNotEmpty())state=state.copy(answer=state.answer?.copy(notesUsed=notes.size))
             val onText:(String)->Unit={t->written=NanoAnswerer.fixCitations(t,passages.size);if(key==null)state=state.copy(answer=state.answer?.copy(text=written))}
             // The project's chosen model writes the answer when it may: a key is saved and the project isn't incognito.
             // Otherwise, or if it fails, Gemini Nano answers on the phone and the card says why.
@@ -743,7 +926,7 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
                 val name=CloudAnswerer.displayName(chosen,catalogModels)
                 state=state.copy(answer=state.answer?.copy(writer=name,cloud=true,status=tr("$name is reading ${passages.size} passages…", "$name está leyendo ${passages.size} pasajes…")))
                 try{
-                    val r=cloud.answer(cloudKey,chosen,question,given,onText)
+                    val r=cloud.answer(cloudKey,chosen,question,given,onText,notes)
                     wroteInCloud=true
                     val cost=if(r.cost>0)" · $"+"%.4f".format(java.util.Locale.US,r.cost) else ""
                     state=state.copy(answer=state.answer?.copy(writerNote=tr("Your question and ${passages.size} passages went to OpenRouter${if(r.provider.isNotBlank())" (${r.provider})" else ""}$cost","Tu pregunta y ${passages.size} pasajes pasaron por OpenRouter${if(r.provider.isNotBlank())" (${r.provider})" else ""}$cost")))
@@ -756,16 +939,77 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
             }
             if(!wroteInCloud){
                 state=state.copy(answer=state.answer?.copy(status=tr("Gemini Nano is reading ${passages.size} passages…", "Gemini Nano está leyendo ${passages.size} pasajes…")))
-                try{nano.answer(question,given,onStatus={s->state=state.copy(answer=state.answer?.copy(status=s))},onText=onText)}
+                try{nano.answer(question,given,onStatus={s->state=state.copy(answer=state.answer?.copy(status=s))},onText=onText,notes=notes)}
                 catch(e:CancellationException){throw e}
                 catch(e:Exception){state=state.copy(answer=state.answer?.copy(working=false,status=tr("Gemini Nano could not answer: ","Gemini Nano no pudo responder: ")+(e.message?.take(160)?:tr("unknown error","error desconocido"))));return@launch}
             }
-            if(key==null||written.trim().startsWith("NOT_FOUND")){state=state.copy(answer=state.answer?.copy(text=written,working=false,status=""));return@launch}
+            if(key==null||written.trim().startsWith("NOT_FOUND")){state=state.copy(answer=state.answer?.copy(text=written,working=false,status=""));rememberAnswer(question);return@launch}
             state=state.copy(answer=state.answer?.copy(status=tr("Jev is checking the citations…", "Jev está comprobando las citas…")))
             val (text,check)=checkCitations(key,written,passages,sources)
             state=state.copy(answer=state.answer?.copy(text=text,check=check,working=false,status=""))
+            rememberAnswer(question)
         }
     }
+    // ---- Memory (step 8) ----
+    private fun incognito()=state.projects.firstOrNull{it.id==state.buildingId}?.incognito==true
+    /**
+     * Keeps the finished answer in the project's history (never for an incognito project), and offers to keep an
+     * instruction found in the question ("responde en español") as a note for later answers.
+     */
+    private fun rememberAnswer(question:String){
+        val a=state.answer?:return
+        if(a.working||a.text.isBlank()||a.text.trim().startsWith("NOT_FOUND"))return
+        val building=state.buildingId
+        val suggestion=com.proasiste.lite.memory.Memory.instructionIn(question)?.takeIf{s->state.notes.none{com.proasiste.lite.graph.Graph.keyOf(it.text)==com.proasiste.lite.graph.Graph.keyOf(s)}}.orEmpty()
+        if(suggestion.isNotEmpty())state=state.copy(answer=a.copy(suggestNote=suggestion))
+        if(incognito()){historyId=0;return}
+        val writer=when{a.fromTable.isNotEmpty()->tr("Table","Tabla");a.fromGraph->tr("Graph","Grafo");else->a.writer}
+        val sources=a.sources.map{com.proasiste.lite.memory.HistorySource(it.id,it.excerpt,it.sourceLocation,it.highlight)}
+        viewModelScope.launch{historyId=withContext(worker){memory.record(building,question,a.text,writer,sources)};state=state.copy(historyCount=withContext(worker){memory.historyCount(building)})}
+    }
+    /** A source opened from the answer on screen: remembered with its history entry. */
+    fun openedSource(id:String){val h=historyId;if(h==0L)return;viewModelScope.launch{withContext(worker){memory.opened(h,id)}}}
+    private fun day(ms:Long)=java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+    fun openHistory(){searchHistory("")}
+    fun closeHistory(){state=state.copy(history=null,historyQuery="")}
+    fun searchHistory(q:String){
+        val building=state.buildingId
+        state=state.copy(historyQuery=q)
+        viewModelScope.launch{
+            val list=withContext(worker){memory.history(building,q)}.map{UiHistory(it.id,it.question,it.answer,it.writer,day(it.created),it.sources.size,it.opened.size,it.reportId!=null)}
+            if(state.historyQuery==q)state=state.copy(history=list)
+        }
+    }
+    /** Shows a past answer again in Search, with its sources opening highlighted as they did. */
+    fun reopenHistory(id:Long){
+        viewModelScope.launch{
+            val e=withContext(worker){memory.history(id)}?:return@launch
+            val all=withContext(worker){store.sources(state.buildingId)}.associateBy{it.id}
+            val sources=e.sources.mapNotNull{h->all[h.sourceId]?.ui(null,h.excerpt,h.location)?.copy(highlight=h.highlight)}
+            stopAnswer();historyId=e.id
+            state=state.copy(history=null,historyQuery="",query=e.question,isSearching=false,answer=UiAnswer(text=e.answer,sources=sources,working=false,writer=e.writer,
+                writerNote=tr("From your history, ${day(e.created)}","De tu historial, ${day(e.created)}")))
+        }
+    }
+    fun deleteHistory(id:Long){viewModelScope.launch{withContext(worker){memory.deleteHistory(id)};state=state.copy(historyCount=withContext(worker){memory.historyCount(state.buildingId)});searchHistory(state.historyQuery)}}
+    fun clearHistory(){viewModelScope.launch{withContext(worker){memory.clearHistory(state.buildingId)};state=state.copy(historyCount=0,history=emptyList())}}
+    private fun refreshMemory(){
+        val building=state.buildingId
+        state=state.copy(notes=memory.notes(building).map{UiNote(it.id,it.text,it.kind==com.proasiste.lite.memory.Memory.FACT,it.building==null)},historyCount=memory.historyCount(building),
+            habits=memory.habits(building,actionsStore.skills().map{it.name+" "+it.instructions}))
+    }
+    fun openMemory(){state=state.copy(memoryOpen=true)}
+    fun closeMemory(){state=state.copy(memoryOpen=false)}
+    /** Keeps a note. One for every project can't be added from an incognito project: shared knowledge is read there, never written. */
+    fun addNote(text:String,fact:Boolean,allProjects:Boolean){
+        if(text.isBlank())return
+        if(allProjects&&incognito()){state=state.copy(error=tr("An incognito project can't add notes for every project.","Un proyecto incógnito no puede agregar notas para todos los proyectos."));return}
+        viewModelScope.launch{withContext(worker){memory.addNote(if(allProjects)null else state.buildingId,if(fact)com.proasiste.lite.memory.Memory.FACT else com.proasiste.lite.memory.Memory.PREFERENCE,text)};refreshMemory()}
+    }
+    fun editNote(id:Long,text:String){if(text.isBlank())return;viewModelScope.launch{withContext(worker){memory.editNote(id,text)};refreshMemory()}}
+    fun deleteNote(id:Long){viewModelScope.launch{withContext(worker){memory.deleteNote(id)};refreshMemory()}}
+    fun acceptNote(allProjects:Boolean){val s=state.answer?.suggestNote.orEmpty();if(s.isEmpty())return;state=state.copy(answer=state.answer?.copy(suggestNote=""));addNote(s,false,allProjects)}
+    fun dismissNote(){state=state.copy(answer=state.answer?.copy(suggestNote=""))}
     /** The passages to answer from, best first. Null means Jev judged that none helps, which is already shown. Falls back to the local order if Jev can't be reached. */
     private suspend fun rerank(question:String,result:SearchResult):List<SearchHit>?{
         val local=result.passages.take(Store.PASSAGES)
@@ -852,6 +1096,13 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         const val REVIEW_SAMPLE=10
         /** The most facts a list answer shows. */
         const val LIST_LIMIT=40
+        const val XLSX="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        /** Reads at most [limit] bytes. */
+        fun copyBoundedBytes(input:java.io.InputStream,limit:Int):ByteArray{
+            val out=java.io.ByteArrayOutputStream();val b=ByteArray(1 shl 16);var total=0
+            while(true){val n=input.read(b);if(n<0)break;total+=n;require(total<=limit){com.proasiste.lite.ui.tr("That file is larger than ${limit/1_000_000} MB.","Ese archivo pesa más de ${limit/1_000_000} MB.")};out.write(b,0,n)}
+            return out.toByteArray()
+        }
         /** Marks a passage that is a graph fact rather than a chunk of the file. */
         const val GRAPH_FACT_ORDINAL=-1
         private fun validDate(value: String): LocalDate? = if (!Regex("\\d{4}-\\d{2}-\\d{2}").matches(value)) null else runCatching { LocalDate.parse(value) }.getOrNull()

@@ -19,10 +19,10 @@ class NanoAnswerer {
     private fun model() = client ?: Generation.getClient().also { client = it }
 
     /** Streams the growing answer text to [onText]. Downloads the model first if AICore offers it. */
-    suspend fun answer(question: String, passages: List<Passage>, onStatus: (String) -> Unit, onText: (String) -> Unit) {
+    suspend fun answer(question: String, passages: List<Passage>, onStatus: (String) -> Unit, onText: (String) -> Unit, notes: List<String> = emptyList()) {
         val model = ready(onStatus)
         onStatus("Gemini Nano is reading ${passages.size} passages…")
-        val request = generateContentRequest(TextPart(prompt(question, passages))) {
+        val request = generateContentRequest(TextPart(prompt(question, passages, notes = notes))) {
             temperature = 0.2f
             topK = 16
             maxOutputTokens = 256
@@ -67,12 +67,20 @@ class NanoAnswerer {
         const val NOT_FOUND = "NOT_FOUND"
 
         /** The answering prompt. [sentences] is how long the answer may be; Nano's small model keeps it short. */
-        fun prompt(question: String, passages: List<Passage>, sentences: String = "1 to 3") = buildString {
+        fun prompt(question: String, passages: List<Passage>, sentences: String = "1 to 3", notes: List<String> = emptyList()) = buildString {
             appendLine("You answer questions about the user's documents using ONLY the numbered passages below.")
             appendLine("Rules:")
             appendLine("- Answer in the same language as the question, in $sentences short sentences.")
             appendLine("- After each fact, cite the passage number in square brackets, like [2].")
             appendLine("- Do not use outside knowledge. If the passages do not contain the answer, reply exactly: $NOT_FOUND")
+            // The person's standing notes: how to answer, and names or facts to keep in mind. Instructions, not passages:
+            // they have no number, so they can't be cited.
+            if (notes.isNotEmpty()) {
+                appendLine("- The user's standing notes below say how to answer; follow them where they fit the rules above (the first one wins if two disagree). Never cite them; cite only passages.")
+                appendLine()
+                appendLine("User's notes:")
+                notes.take(20).forEach { appendLine("* ${it.replace("\n", " ")}") }
+            }
             appendLine()
             appendLine("Passages:")
             // On separate lines, table rows get counted and cited as if they were passages.

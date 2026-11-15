@@ -44,21 +44,8 @@ class Engine private constructor(context:Context){
             "audio"->{val pcm=MediaInputs.audio(file);val size=12*16000;val step=10*16000;val parts=mutableListOf<VectorChunk>();var from=0
                 while(from<pcm.size){val until=minOf(from+size,pcm.size);parts+=VectorChunk(s.id,parts.size,0,from/16,"",embedder.embedAudio(pcm.copyOfRange(from,until).map{it.coerceIn(-1f,1f)}.toFloatArray()));if(until==pcm.size)break;from+=step}
                 Encoded(parts)}
-            else->{val parts=mutableListOf<VectorChunk>();var pages=0;var noText=0
-                PDDocument.load(file).use{doc->require(doc.numberOfPages<=1000){tr("PDF limit is 1000 pages", "El límite de PDF es de 1000 páginas")}
-                    pages=doc.numberOfPages
-                    for(page in 1..pages){val read=PdfText.page(doc,page);val text=read.prose.trim()
-                        if(!hasText(text+read.tables.flatten().joinToString(" ")))noText++
-                        if(text.isNotBlank()){val words=text.split(Regex("\\s+"));var offset=0
-                            // ~60-word blocks with 15 words of overlap: small enough that each block is about one idea.
-                            while(offset<words.size){val end=minOf(offset+60,words.size);val chunk=words.subList(offset,end).joinToString(" ");parts+=VectorChunk(s.id,parts.size,page,0,chunk,embedder.embedText(chunk));if(end==words.size)break;offset+=45}
-                        }
-                        // Rebuilt tables keep their line breaks and whole rows: a row cut in half loses its label.
-                        for(rows in read.tables)for(chunk in TableRows.blocks(rows))parts+=VectorChunk(s.id,parts.size,page,0,chunk,embedder.embedText(chunk))
-                    }}
-                if(pages>0&&noText==pages)throw NeedsOcr(pages)
-                require(parts.isNotEmpty()){tr("No selectable text in this PDF.", "Este PDF no tiene texto seleccionable.")}
-                Encoded(parts,pages,noText)}
+            else->{val p=pdfPieces(file)
+                Encoded(p.pieces.map{VectorChunk(s.id,it.ordinal,it.page,0,it.text,embedder.embedText(it.text))},p.pages,p.noTextPages)}
         }
     }
 
@@ -89,7 +76,34 @@ class Engine private constructor(context:Context){
         return out.take(maxChars).toString()
     }
 
+    /** One searchable piece of a PDF before it is embedded. */
+    data class Piece(val ordinal:Int,val page:Int,val text:String)
+    /** A PDF read and split for the index, and how many of its pages had no text. */
+    class PdfPieces(val pieces:List<Piece>,val pages:Int,val noTextPages:Int)
+
     companion object {
+        /**
+         * Reads a PDF and splits it into the pieces the index embeds, in order: each page's prose in ~60-word blocks with
+         * 15 words of overlap, then its rebuilt table rows. The desktop indexer calls this too, so a pack made there splits
+         * text exactly as the phone does. Throws [NeedsOcr] for a PDF with no text on any page.
+         */
+        fun pdfPieces(file:File):PdfPieces{
+            val parts=mutableListOf<Piece>();var pages=0;var noText=0
+            PDDocument.load(file).use{doc->require(doc.numberOfPages<=1000){tr("PDF limit is 1000 pages", "El límite de PDF es de 1000 páginas")}
+                pages=doc.numberOfPages
+                for(page in 1..pages){val read=PdfText.page(doc,page);val text=read.prose.trim()
+                    if(!hasText(text+read.tables.flatten().joinToString(" ")))noText++
+                    if(text.isNotBlank()){val words=text.split(Regex("\\s+"));var offset=0
+                        // ~60-word blocks with 15 words of overlap: small enough that each block is about one idea.
+                        while(offset<words.size){val end=minOf(offset+60,words.size);parts+=Piece(parts.size,page,words.subList(offset,end).joinToString(" "));if(end==words.size)break;offset+=45}
+                    }
+                    // Rebuilt tables keep their line breaks and whole rows: a row cut in half loses its label.
+                    for(rows in read.tables)for(chunk in TableRows.blocks(rows))parts+=Piece(parts.size,page,chunk)
+                }}
+            if(pages>0&&noText==pages)throw NeedsOcr(pages)
+            require(parts.isNotEmpty()){tr("No selectable text in this PDF.", "Este PDF no tiene texto seleccionable.")}
+            return PdfPieces(parts,pages,noText)
+        }
         @Volatile private var instance:Engine?=null
         fun get(context:Context):Engine=instance?:synchronized(this){instance?:Engine(context.applicationContext).also{instance=it}}
         /** A page with fewer letters than this is taken as having no text: a scan, or only a stamp or page number. */

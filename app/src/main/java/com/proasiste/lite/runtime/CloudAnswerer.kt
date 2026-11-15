@@ -23,7 +23,7 @@ class CloudAnswerer {
     data class Model(val id: String, val name: String, val inputPerMillion: Double, val outputPerMillion: Double, val context: Int, val created: Long)
 
     /** Streams the growing answer to [onText], then returns it with its cost. */
-    suspend fun answer(key: String, model: String, question: String, passages: List<NanoAnswerer.Passage>, onText: (String) -> Unit): Result = withContext(Dispatchers.IO) {
+    suspend fun answer(key: String, model: String, question: String, passages: List<NanoAnswerer.Passage>, onText: (String) -> Unit, notes: List<String> = emptyList()): Result = withContext(Dispatchers.IO) {
         val c = URL(URL_CHAT).openConnection() as HttpURLConnection
         try {
             c.requestMethod = "POST"; c.doOutput = true
@@ -31,7 +31,7 @@ class CloudAnswerer {
             c.setRequestProperty("Authorization", "Bearer $key")
             c.setRequestProperty("Content-Type", "application/json")
             c.setRequestProperty("Accept", "text/event-stream")
-            c.outputStream.use { it.write(request(model, question, passages).toString().toByteArray()) }
+            c.outputStream.use { it.write(request(model, question, passages, notes).toString().toByteArray()) }
             val code = c.responseCode
             if (code != 200) throw CloudException(code, describe(code, model))
             val text = StringBuilder(); var cost = 0.0; var provider = ""
@@ -76,9 +76,9 @@ class CloudAnswerer {
          * The request body. No temperature or other sampling setting: some current models (Claude Opus 5.5 among them)
          * reject them, and the prompt already pins the answer to the passages.
          */
-        fun request(model: String, question: String, passages: List<NanoAnswerer.Passage>): JSONObject =
+        fun request(model: String, question: String, passages: List<NanoAnswerer.Passage>, notes: List<String> = emptyList()): JSONObject =
             JSONObject().put("model", model).put("stream", true).put("max_tokens", MAX_TOKENS)
-                .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", NanoAnswerer.prompt(question, passages, SENTENCES))))
+                .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", NanoAnswerer.prompt(question, passages, SENTENCES, notes))))
                 .put("usage", JSONObject().put("include", true))
 
         /** The JSON of one server-sent event line, or null for comments, keep-alives and the closing [DONE]. */
