@@ -12,6 +12,8 @@ ProAsisteLocal (`com.plantroom.pocket`) loads every chunk to search, which break
 | 3 | Sorting and tagging | **Done** (2026-11-13) |
 | 4 | DocLang reader, then graph tables the user guides | **Done** (2026-11-14) |
 | 5 | Skills and actions on files, saved reports and decisions | **Done** (2026-11-14) |
+| 6 | Google Drive connection: index files where they live | Planned |
+| 7 | Tables in the graph: columns on types, imported spreadsheets, counting questions | Planned |
 
 ## 1. Getting thousands of files in — done
 
@@ -188,3 +190,85 @@ shrink to touching dots. A tapped dot moves to the middle with one labelled bran
 safeguard → ×22", "← may use with supervision"), the names it leads to fanned at the end.
 
 Not yet: undoing a merge; places tighter than a whole page on manuals laid out in columns.
+
+## 6. Google Drive connection: index files where they live
+
+**Planned.** Today every import copies the file into the app's storage, so files kept in Drive sit on the phone twice.
+This step lets a project keep its files in Drive and hold only what it builds from them on the phone: text chunks,
+search index, graph facts and DocLang blocks.
+
+- **Sign in and pick folders.** Google sign-in with Drive read-only access (`drive.readonly`); a project links one or
+  more Drive folders, subfolders included. Files are tracked by Drive file ID, so moves and renames don't break them.
+- **Index without keeping the file.** Each file is downloaded to a temporary spot, read once (text, DocLang, embeddings,
+  graph), then deleted. A `sources` row records the Drive ID, its version (`md5Checksum` / `modifiedTime`) and that it
+  lives in Drive rather than in the app's storage.
+- **Keep in step.** Drive's changes feed (`changes.list` with a saved page token) finds files added, edited, moved or
+  deleted in linked folders: new and edited ones are indexed again, deleted ones leave the project (their facts with
+  them). Checked when the app opens and from the background indexer, on Wi-Fi by default.
+- **Opening a page.** The viewer fetches the file from Drive when opened, keeping a small cache of recent files;
+  "Keep offline" on a file or tag keeps a copy. Without a connection, search results, facts and reports still show,
+  and a file that can't be fetched says so.
+- **Copy stays an option.** Importing from the phone, or from Drive through the file picker, copies as today; a project
+  can mix both kinds of file.
+
+To settle first: Google's verification for the Drive scope (a restricted scope if the app is published; fine for
+personal use with test users), and how long 5,000 downloads take on the Fold (indexing stays about 0.6 s a page).
+
+## 7. Tables in the graph: columns on types, imported spreadsheets, counting questions
+
+**Planned.** Questions that count or filter across documents ("how many rulings rejected art. 60", "contracts ending
+in 2027") should be answered exactly from data, not through search: the golden set (2026-11-05) got 1 of 10
+cross-ruling questions right. The idea follows FalkorDB's structured data knowledge graph (falkordb.com, 2026-11-10),
+built on the app's own SQLite graph: a table row and a document's facts about the same name land on the same dot,
+because both use `Graph.keyOf`. Nothing here is specific to one kind of document; rulings are the first case.
+
+**7a. Columns on graph types, filled from documents.** In Graph types, a node type can declare columns, each with a
+value type: text, number, date, yes/no or list (Contract: signed on, amount, ends on; Appliance: model, wattage;
+Ruling: date, outcome, subject). Each dot of that type gets its values when its file's graph is built:
+
+- Legal mode fills a ruling's columns with the rule-based skeleton, no model: case number, date, type, filer,
+  challenged norms, and the outcome read from SE RESUELVE (upheld, rejected, partly upheld, inadmissible, or "unclear",
+  never guessed). Start by measuring how complete each column is across P04's 173 rulings.
+- Other projects ask the model for each dot's column values along with its facts.
+- A value must be on its cited page and read as its type (a date as a date, a number as a number); doubtful values go
+  to review like held-back facts. Every value keeps its file and page, so it opens highlighted.
+- Columns that are really links (a ruling's judges, an appliance's parts) come from the links themselves, not
+  extraction.
+- A column no rule can fill, such as a ruling's subject, is filled by the model or from the project's tags.
+
+**7b. Importing your own tables.** CSV (delimiter and decimal style detected), .xlsx read directly (each sheet a
+table; cached formula values, dates from date-formatted cells, merged cells filled; old .xls and protected workbooks
+refused), and Google Sheets once step 6 exists.
+
+- The app measures each column (type, fill, uniqueness) and proposes a mapping: key, name, type, column types, and
+  columns holding another table's key, which become links. The user confirms or edits it. Every cell is checked
+  before anything is written; one failure writes nothing.
+- A row lands on the dot with the same name and type. A link to a row not loaded yet makes a placeholder dot, filled
+  when its table arrives, so files can be loaded in any order.
+- Importing the same file again re-syncs it in one transaction: changed rows update, new rows arrive, removed rows go
+  (a dot a document still mentions keeps its document facts). An unchanged file is skipped by its fingerprint;
+  removing a table takes back exactly what it wrote.
+
+**One store for both** (schema 12; back up the phone's database first): each value records its dot, its column, the
+table or file that wrote it, its page when it came from a document, and its type. Sources never overwrite each other;
+where they disagree, both values show. Library → Tables lists one table per type with rows; each saves as .xlsx, so
+the user can correct it in Excel and import it back, the corrections sitting beside the extracted values.
+
+**7c. Questions answered from tables.** Fixed patterns, no model: count, average, minimum and maximum, lists filtered
+by column values, and grouping ("outcomes per year", "who dissents most"), answered from SQLite like today's list
+answers, with each row openable. The card says which table answered. Optionally, the project's OpenRouter model
+writes a read-only query for questions the patterns don't cover; it sees the question and the table layout, never the
+data. Never in incognito projects, never with Gemini Nano.
+
+**7d. Likely duplicates.** Names that probably mean the same, found by rules (case, accents, "Rol 17.292-25" and
+"17292-2025") and by similarity with EmbeddingGemma on the phone, offered for the user to confirm with Merge names.
+Nothing merges on its own until a merge can be undone.
+
+**Checked by:** tests for the .xlsx reader (dates, merged cells, formulas, decimal styles), the mapping checks and
+re-sync (changed, new and removed rows, a row a document still mentions); on the Fold, P04's rulings (legal mode),
+P03's manuals (model-filled columns, such as an appliance's model and wattage) and an imported spreadsheet joining one
+of them; then the golden set's 10 cross-ruling questions, which this step should mostly win, and all 61 so nothing
+else gets worse.
+
+Not in this step: photos and voice notes get no columns; Parquet or database connections; tables of millions of
+rows; automatic merging. 7a and 7c don't need step 6 and can come first.
