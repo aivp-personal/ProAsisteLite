@@ -34,15 +34,19 @@ The additional `tap-hose-photos.zip` contains the four synthetic hose photograph
 
 ## Build and customise
 
-Install JDK 17, Android SDK platform 35 and Gradle 8.11.1. Set ANDROID_HOME to your SDK folder, or create your own `local.properties` with `sdk.dir`. No machine-specific SDK location is included.
+Install JDK 17 and Android SDK platform 35. The Gradle wrapper fetches Gradle 8.11.1 itself. Set ANDROID_HOME to your SDK folder, or create your own `local.properties` with `sdk.dir`. No machine-specific SDK location is included.
 
 From this directory:
 
 ```sh
-gradle assembleDebug
+./gradlew assembleDebug
 ```
 
-The build downloads its Android dependencies, bundles the unpacked `sample-data` into the app and writes `app/build/outputs/apk/debug/app-debug.apk`. You can also import the project into Android Studio using a local Gradle 8.11.1 installation. A Gradle wrapper is not bundled. Review SDK licences yourself during installation.
+(`gradlew.bat assembleDebug` on Windows.)
+
+The build downloads its Android dependencies, bundles the unpacked `sample-data` into the app and writes `app/build/outputs/apk/debug/app-debug.apk`. You can also open the project in Android Studio, which uses the same wrapper.
+
+To install a build over an app already on a phone without losing its data, sign it with the same debug key as the build already installed: copy `~/.android/debug.keystore` from the machine that built it. An APK signed with another key can only be installed after uninstalling, which deletes the app's data. Review SDK licences yourself during installation.
 
 The sample source files are in `sample-data`. App behaviour and screens are in `app/src/main/java/com/proasiste/lite`. Start by replacing the fictional buildings and sample collection, then adapt the workflow for your use case.
 
