@@ -18,6 +18,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -155,6 +156,23 @@ class MainActivity:ComponentActivity(){
     }
 }
 
+/** The kinds outlined on this page, in their colours, and how the document was read. */
+@Composable private fun RegionLegend(doc:com.proasiste.lite.runtime.DocLang.Doc?,counts:List<Pair<String,Int>>,error:String?){
+    val small=androidx.compose.ui.unit.TextUnit(12f,androidx.compose.ui.unit.TextUnitType.Sp)
+    when{
+        error!=null->Text(tr("Couldn't read the regions: $error","No se pudieron leer las regiones: $error"),color=Color(0xFFE0533D),fontSize=small)
+        doc==null->Text(tr("Reading the regions…","Leyendo las regiones…"),color=Color(0xFF9B9B9B),fontSize=small)
+        else->{
+            Row(Modifier.fillMaxWidth().horizontalScroll(androidx.compose.foundation.rememberScrollState()).padding(top=6.dp),horizontalArrangement=Arrangement.spacedBy(10.dp),verticalAlignment=Alignment.CenterVertically){
+                if(counts.isEmpty())Text(tr("No regions on this page.","Sin regiones en esta página."),color=Color(0xFF9B9B9B),fontSize=small)
+                counts.forEach{(k,n)->Row(verticalAlignment=Alignment.CenterVertically){Box(Modifier.size(10.dp).background(Color(DocRegions.color(k))));Text(" ${if(L10n.spanish)DocRegions.KINDS[k]?.second?:k else k.replace('_',' ')} $n",color=Color(0xFFF5F5F5),fontSize=small)}}
+            }
+            Text((if(doc.tagged)tr("Tagged PDF: blocks from its tag tree, in reading order. Dashed: text the tree left out.","PDF etiquetado: bloques de su árbol de etiquetas, en orden de lectura. Discontinuo: texto fuera del árbol.")
+                else tr("Untagged PDF: blocks built from the letters' positions.","PDF sin etiquetas: bloques armados por la posición de las letras."))+tr(" ↔ links the halves of a paragraph split by a page break."," ↔ une las mitades de un párrafo cortado por un salto de página."),color=Color(0xFF9B9B9B),fontSize=small)
+        }
+    }
+}
+
 /** [pageReview] is what the graph holds per page; the header's review link opens that page's facts through [onReview]. */
 @Composable private fun PdfViewer(item:UiItem,pageReview:Map<Int,UiPageStatus>,onReview:(Int)->Unit,onReviewPending:(Int)->Unit,onClose:()->Unit){
     var page by remember(item.id){mutableIntStateOf(Regex("\\d+").find(item.sourceLocation)?.value?.toIntOrNull()?.minus(1)?:0)}
@@ -169,7 +187,12 @@ class MainActivity:ComponentActivity(){
     // A stored place (a graph fact's paragraph, both halves when it crosses a page break), as fractions of the page.
     val places=remember(item.id){com.proasiste.lite.runtime.DocPages.parse(item.highlight)}
     var note by remember(item.id){mutableStateOf<String?>(null)}
-    LaunchedEffect(item.id,page){
+    // DocLang regions: every block the reader finds on the page, outlined by kind. The document is read once, when first shown.
+    var showRegions by remember{mutableStateOf(false)}
+    var regionDoc by remember(item.id){mutableStateOf<com.proasiste.lite.runtime.DocLang.Doc?>(null)}
+    var regionError by remember(item.id){mutableStateOf<String?>(null)}
+    var regionCounts by remember(item.id){mutableStateOf<List<Pair<String,Int>>>(emptyList())}
+    LaunchedEffect(item.id,page,showRegions){
         image=null;error=null
         try{val result=withContext(Dispatchers.IO){ParcelFileDescriptor.open(File(item.localPath),ParcelFileDescriptor.MODE_READ_ONLY).use{fd->PdfRenderer(fd).use{renderer->val total=renderer.pageCount;val p=page.coerceIn(0,total-1);renderer.openPage(p).use{pdf->val b=Bitmap.createBitmap(1100,(1100f*pdf.height/pdf.width).toInt().coerceAtLeast(1),Bitmap.Config.ARGB_8888);b.eraseColor(android.graphics.Color.WHITE);pdf.render(b,null,null,PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);Pair(total,b)}}}};pages=result.first;image=result.second
             val here=page+1
@@ -188,6 +211,13 @@ class MainActivity:ComponentActivity(){
             if(rects.isNotEmpty())image=result.second.copy(Bitmap.Config.ARGB_8888,true).also{b->
                 val c=android.graphics.Canvas(b);val paint=android.graphics.Paint().apply{color=android.graphics.Color.argb(130,230,190,90)}
                 rects.forEach{r->c.drawRect(r.left.coerceIn(0f,1f)*b.width,r.top.coerceIn(0f,1f)*b.height,r.right.coerceIn(0f,1f)*b.width,r.bottom.coerceIn(0f,1f)*b.height,paint)}}
+            regionCounts=emptyList()
+            if(showRegions){
+                if(regionDoc==null&&regionError==null)withContext(Dispatchers.IO){runCatching{com.tom_roush.pdfbox.pdmodel.PDDocument.load(File(item.localPath)).use{com.proasiste.lite.runtime.DocLang.read(it)}}}.onSuccess{regionDoc=it}.onFailure{regionError=it.message?:it.javaClass.simpleName}
+                regionDoc?.let{d->val blocks=DocRegions.onPage(d,here)
+                    regionCounts=blocks.groupingBy{it.kind}.eachCount().toList().sortedBy{(k,_)->DocRegions.KINDS.keys.indexOf(k).let{i->if(i<0)99 else i}}
+                    image=DocRegions.paint(image!!,blocks)}
+            }
         }catch(e:Exception){error=e.message}
     }
     androidx.compose.ui.window.Dialog(onDismissRequest=onClose,properties=androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth=false)){
@@ -196,8 +226,9 @@ class MainActivity:ComponentActivity(){
                 Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){TextButton(onClick=onClose){Text(tr("Close", "Cerrar"))};Text("${page+1} / $pages",Modifier.padding(12.dp),color=Color(0xFFF5F5F5));Spacer(Modifier.weight(1f));ReviewLabel(pageReview[page+1],enabled=true,onPending={onReviewPending(page+1)},onAll={onReview(page+1)});Text(item.assetId,Modifier.padding(12.dp),color=Color(0xFF9B9B9B))}
                 Text(item.title,style=MaterialTheme.typography.titleMedium,color=Color(0xFFF5F5F5))
                 note?.let{Text(it,color=Color(0xFF9B9B9B),fontSize=androidx.compose.ui.unit.TextUnit(12f,androidx.compose.ui.unit.TextUnitType.Sp))}
+                if(showRegions)RegionLegend(regionDoc,regionCounts,regionError)
                 Box(Modifier.weight(1f).fillMaxWidth().padding(vertical=12.dp).transformable(transform)){image?.let{Image(it.asImageBitmap(),tr("Report page ${page+1}", "Página ${page+1} del informe"),Modifier.fillMaxSize().graphicsLayer(scaleX=scale,scaleY=scale,translationX=offset.x,translationY=offset.y))}?:if(error==null)CircularProgressIndicator()else Text(error!!)}
-                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){TextButton(onClick={page--},enabled=page>0){Text(tr("Previous", "Anterior"))};TextButton(onClick={page++},enabled=page+1<pages){Text(tr("Next", "Siguiente"))}}
+                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){TextButton(onClick={page--},enabled=page>0){Text(tr("Previous", "Anterior"))};FilterChip(selected=showRegions,onClick={showRegions=!showRegions},label={Text(tr("DocLang regions","Regiones DocLang"))});TextButton(onClick={page++},enabled=page+1<pages){Text(tr("Next", "Siguiente"))}}
             }
         }
     }
