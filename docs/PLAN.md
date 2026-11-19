@@ -15,6 +15,7 @@ ProAsisteLocal (`com.plantroom.pocket`) loads every chunk to search, which break
 | 6 | Google Drive connection: index files where they live | Planned |
 | 7 | Tables in the graph: columns on types, imported spreadsheets, counting questions | **Built** (2026-11-15) |
 | 8 | Memory: what you asked, what you prefer, what you do often | **Built** (2026-11-15) |
+| 9 | Three tabs: Ask, Documents, Work | Planned (2026-11-19) |
 
 ## 1. Getting thousands of files in — done
 
@@ -375,3 +376,64 @@ warm. Checked on the Fold: a suggested note kept, then "1 of your notes went wit
 **Also:** a piece over the model's 512 tokens is embedded from its first 85% of words until it fits, on the phone and in
 `desktop/embed_pack.py` alike; before, it failed its whole file. Not yet: semantic name matching with EmbeddingGemma for
 7d, model-written queries for 7c, the cold first search.
+
+## 9. Three tabs: Ask, Documents, Work
+
+**Planned (2026-11-19).** The bottom bar today is Search, Library and a wide **Add evidence** button whose sheet mixes
+three kinds of thing: ways to bring files in (photo, voice note, files, folder, table, project pack, graph file),
+graph work (Build graph with DeepSeek, Graph types) and running work (Actions on files). Reports, History, Notes and
+the Graph sit as rows inside Library. With 5,000 files nobody browses a list; they ask. And what a lawyer bills for,
+reports and decisions, is three taps deep. The bar becomes three tabs, each one job:
+
+| Tab | Spanish | For | Holds |
+|---|---|---|---|
+| **Ask** | Consultar | Asking the collection | Question box, answer card with cited sources, search results, graph answers, "See its graph" |
+| **Documents** | Documentos | Managing the collection | File list, folder and tag filters, indexing status, Tags…, and the **+** |
+| **Work** | Trabajo | Keeping what you produced | Running actions, reports, decisions, skills, history |
+
+Settings and Notes move behind the gear at the top. The project picker stays where it is.
+
+**Ask** (today's Search screen, `plantroom.nav-search`)
+- The answer card stays first. List questions answered from the graph show here as today.
+- The graph has no tab of its own until it proves itself (golden set, see below): it opens from an answer's graph
+  facts, from "See its graph" on a file, and from a **Graph · N facts** link on Ask. Graph review and "Same name?" stay
+  on the graph screen.
+- Long-press an answer → **Save to Work** (saves the report, as Save as report does now).
+
+**Documents** (today's Library)
+- File list with the existing chips (All, Photos, Voice notes, Reports) and tag chips; folder (asset) filter.
+- One status line on top: "4,812 indexed · 23 need OCR · 2 failed · importing 140 of 900", opening a housekeeping view
+  (failed files, scans, the import queue with Pause).
+- **+** as a floating button on this screen only. Its sheet keeps only ways to add: Take a photo, Record a voice note,
+  Import files, Import a folder, Import a table, Import a project pack, Import a graph file.
+- **Build graph with DeepSeek** and **Graph types** leave the add sheet for the graph screen's menu.
+
+**Work** (new; today's Reports sheet, History and Actions on files)
+1. *In progress*: background Actions on files runs with progress and Pause (today only in the notification). A
+   finished run becomes its report.
+2. *Reports*: saved answers and action results, newest first, with date, tags and decision count; export PDF or
+   Markdown.
+3. *Decisions*: the dated, add-only log across reports and files as a timeline, filtered by project, file or tag;
+   export CSV.
+4. *Skills*: your own actions and the ones suggested after a request is asked three times (8c); run on a project or a
+   tag. **Actions on files** moves here from the add sheet.
+5. *History*: today's Library → History (search, reopen, delete; none for incognito projects).
+- Filter row: This project / All projects, tag chips. Exports of graph facts and tables move here from Reports.
+- A badge on the tab when a background run finishes.
+
+**Code:** `ui/PlantroomScreen.kt` holds the bar (`bottomBar`, a `library` flag and `navigate(toLibrary)`) and the add
+sheet (`capture`). The flag becomes a three-value tab; the Library column's Reports, History, Notes and Graph rows move
+to Work, Ask and the gear. `ui/ReportsScreen.kt` and `ui/MemoryScreen.kt` become Work's sections rather than sheets.
+Test tags follow the names (`plantroom.nav-ask`, `plantroom.nav-documents`, `plantroom.nav-work`,
+`plantroom.add`). `desktop/golden_run.py` drives the Search screen through uiautomator, so it is checked against
+the new layout. No schema change.
+
+**Checked by:** on the Fold, every action that was reachable before is reachable after (each row of the add sheet and of
+Library, tapped); a question, Save to Work, a decision on it, and CSV export; an Actions run
+seen in progress and then as a report; the golden set run through `golden_run.py` on the new layout, answers unchanged.
+Before moving anything, count from `history` which screens are used (sources opened, reports made) so the order of
+sections in Work follows real use.
+
+Not in this step: a Graph tab (later, if the golden set shows the graph earning it); team sharing of reports and
+decisions (the web version); indexing search from DocLang blocks and keeping identifiers such as "17.292-26" or BL
+numbers whole in the word index, which are separate changes with their own golden-set check.
