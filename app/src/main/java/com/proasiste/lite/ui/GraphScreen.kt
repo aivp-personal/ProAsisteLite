@@ -77,7 +77,7 @@ internal fun GraphScreen(g: UiGraph, actions: UiActions) {
                 }
                 when {
                     p == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Gold) }
-                    p.nodes.isEmpty() -> Text(tr("No graph yet. Build one with “Build graph with DeepSeek” in the menu.", "Aún no hay grafo. Constrúyelo con «Construir el grafo con DeepSeek» en el menú."),
+                    p.nodes.isEmpty() -> Text(tr("No graph yet. Build one with “Build graph with DeepSeek” on Ask.", "Aún no hay grafo. Constrúyelo con «Construir el grafo con DeepSeek» en Consultar."),
                         color = Muted, fontSize = 14.sp, modifier = Modifier.padding(24.dp))
                     else -> {
                         val colourOf = remember(p) { p.types.take(TYPE_COLOURS.size).withIndex().associate { (i, t) -> t to TYPE_COLOURS[i] } }

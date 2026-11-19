@@ -26,35 +26,35 @@ private val DECISIONS = listOf("relevante" to ("Relevant" to "Relevante"), "no r
     "aceptado" to ("Accepted" to "Aceptado"), "rechazado" to ("Rejected" to "Rechazado"), "por revisar" to ("To check" to "Por revisar"))
 internal fun decisionLabel(value: String) = DECISIONS.firstOrNull { it.first == value }?.second?.let { tr(it.first, it.second) } ?: value
 
-/** The project's reports, and the project-wide exports. */
-@OptIn(ExperimentalMaterial3Api::class)
+/** The project's reports and the project-wide exports: a section of the Work tab, which scrolls it. */
 @Composable
-internal fun ReportsSheet(state: UiState, actions: UiActions, onClose: () -> Unit) {
+internal fun ReportsSection(state: UiState, actions: UiActions) {
     val locked = state.busy || state.recording
-    ModalBottomSheet(onDismissRequest = onClose, containerColor = Steel, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.verticalScroll(rememberScrollState()).testTag("plantroom.reports")) {
-            SheetHeader(tr("Reports · ${state.buildingId}", "Informes · ${state.buildingId}"), tr("Answers you saved and notes you wrote, with their sources and your decisions.", "Respuestas que guardaste y notas que escribiste, con sus fuentes y tus decisiones."))
-            Column(Modifier.padding(horizontal = 20.dp)) {
-                if (state.reports.isEmpty()) Text(tr("No reports yet. Save an answer with “Save as report”, or write a note.", "Aún no hay informes. Guarda una respuesta con «Guardar como informe», o escribe una nota."), color = Muted, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(4.dp))
-                state.reports.forEach { r ->
-                    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).background(Raised, RoundedCornerShape(12.dp)).clickable(enabled = !locked) { actions.onOpenReport(r.id); onClose() }
-                        .padding(horizontal = 14.dp, vertical = 11.dp).testTag("plantroom.report.${r.id}")) {
-                        Text(r.title, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text(listOfNotNull(day(r.updated), byLine(r.model), tr("${r.cited.size} sources", "${r.cited.size} fuentes"), r.decision?.let { decisionLabel(it.value) }).joinToString("  ·  "), color = Muted, fontSize = 11.sp)
-                    }
-                }
-                TextButton(onClick = { actions.onNewNote(); onClose() }, enabled = !locked, modifier = Modifier.testTag("plantroom.new-note")) { Text(tr("+ Write a note", "+ Escribir una nota")) }
-            }
-            HorizontalDivider(Modifier.padding(horizontal = 24.dp, vertical = 8.dp), color = Line)
-            Column(Modifier.padding(horizontal = 24.dp)) {
-                Eyebrow(tr("SAVE TO A FILE", "GUARDAR EN UN ARCHIVO"))
-                Text(tr("You choose where: a folder on the phone or Drive. Nothing is sent anywhere else.", "Tú eliges dónde: una carpeta del teléfono o Drive. Nada se envía a otro lugar."), color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
-                TextButton(onClick = actions.onExportDecisions, enabled = !locked, modifier = Modifier.testTag("plantroom.export-decisions")) { Text(tr("All decisions · CSV", "Todas las decisiones · CSV")) }
-                TextButton(onClick = { actions.onExportFacts("csv") }, enabled = !locked, modifier = Modifier.testTag("plantroom.export-facts-csv")) { Text(tr("Graph facts · CSV (spreadsheet)", "Datos del grafo · CSV (planilla)")) }
-                TextButton(onClick = { actions.onExportFacts("json") }, enabled = !locked, modifier = Modifier.testTag("plantroom.export-facts-json")) { Text(tr("Graph facts · JSON (for tools; re-importable)", "Datos del grafo · JSON (para herramientas; reimportable)")) }
-            }
-            Spacer(Modifier.height(28.dp))
+    Column(Modifier.testTag("plantroom.reports")) {
+        Column(Modifier.padding(horizontal = 24.dp, vertical = 6.dp)) {
+            Eyebrow(tr("REPORTS · ${state.reports.size}", "INFORMES · ${state.reports.size}"))
+            Text(tr("Answers you saved and notes you wrote, with their sources and your decisions.", "Respuestas que guardaste y notas que escribiste, con sus fuentes y tus decisiones."), color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
         }
+        Column(Modifier.padding(horizontal = 20.dp)) {
+            if (state.reports.isEmpty()) Text(tr("No reports yet. Save an answer with “Save as report”, or write a note.", "Aún no hay informes. Guarda una respuesta con «Guardar como informe», o escribe una nota."), color = Muted, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(4.dp))
+            state.reports.forEach { r ->
+                Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).background(Raised, RoundedCornerShape(12.dp)).clickable(enabled = !locked) { actions.onOpenReport(r.id) }
+                    .padding(horizontal = 14.dp, vertical = 11.dp).testTag("plantroom.report.${r.id}")) {
+                    Text(r.title, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(listOfNotNull(day(r.updated), byLine(r.model), tr("${r.cited.size} sources", "${r.cited.size} fuentes"), r.decision?.let { decisionLabel(it.value) }).joinToString("  ·  "), color = Muted, fontSize = 11.sp)
+                }
+            }
+            TextButton(onClick = actions.onNewNote, enabled = !locked, modifier = Modifier.testTag("plantroom.new-note")) { Text(tr("+ Write a note", "+ Escribir una nota")) }
+        }
+        HorizontalDivider(Modifier.padding(horizontal = 24.dp, vertical = 8.dp), color = Line)
+        Column(Modifier.padding(horizontal = 24.dp)) {
+            Eyebrow(tr("SAVE TO A FILE", "GUARDAR EN UN ARCHIVO"))
+            Text(tr("You choose where: a folder on the phone or Drive. Nothing is sent anywhere else.", "Tú eliges dónde: una carpeta del teléfono o Drive. Nada se envía a otro lugar."), color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+            TextButton(onClick = actions.onExportDecisions, enabled = !locked, modifier = Modifier.testTag("plantroom.export-decisions")) { Text(tr("All decisions · CSV", "Todas las decisiones · CSV")) }
+            TextButton(onClick = { actions.onExportFacts("csv") }, enabled = !locked, modifier = Modifier.testTag("plantroom.export-facts-csv")) { Text(tr("Graph facts · CSV (spreadsheet)", "Datos del grafo · CSV (planilla)")) }
+            TextButton(onClick = { actions.onExportFacts("json") }, enabled = !locked, modifier = Modifier.testTag("plantroom.export-facts-json")) { Text(tr("Graph facts · JSON (for tools; re-importable)", "Datos del grafo · JSON (para herramientas; reimportable)")) }
+        }
+        Spacer(Modifier.height(28.dp))
     }
 }
 

@@ -4,18 +4,19 @@ Built on the Plantroom members starter app from The AI Automators. A native Andr
 
 ## What differs from Plantroom
 
+- Three tabs: **Ask** (questions, answers, and the graph and tables), **Documents** (the collection, its status and tags, and a **+** to add files) and **Work** (actions on files, reports with their decisions, history and exports). Notes for answers are in settings.
 - Search holds only vectors in compact arrays and reads word counts from a stored word index, so large projects fit in the app's memory.
 - The database schema moves forward through numbered migrations.
 - A file already in a project is not imported twice.
-- Add evidence → Import a folder queues every PDF, photo and recording in a folder and its subfolders, then imports and indexes them in a background service with a notification and a Pause button. It keeps going with the screen off or the app closed, and resumes where it stopped. Each file's subfolder becomes its asset, so search can be filtered by folder.
+- Documents → + → Import a folder queues every PDF, photo and recording in a folder and its subfolders, then imports and indexes them in a background service with a notification and a Pause button. It keeps going with the screen off or the app closed, and resumes where it stopped. Each file's subfolder becomes its asset, so search can be filtered by folder.
 - Settings → Who writes answers chooses, per project, Gemini Nano on the phone or a model from OpenRouter's catalog; each answer says which model wrote it, what was sent and what it cost. Incognito projects always use Nano.
-- Add evidence → Graph types chooses, per project, Automatic (legal mode for Chilean rulings) or your own node and link types, which can start from the legal ones. Graph facts are built from the PDF's DocLang blocks without running headers and footers, and each opens on its page with its paragraph highlighted.
+- Ask → Graph types chooses, per project, Automatic (legal mode for Chilean rulings) or your own node and link types, which can start from the legal ones. Graph facts are built from the PDF's DocLang blocks without running headers and footers, and each opens on its page with its paragraph highlighted.
 - An answer can be saved as a report (question, answer, model, sources that open highlighted); reports and files take dated decisions; reports save as PDF or Markdown, decisions as CSV, graph facts as CSV or JSON, and a PDF as a DocLang file, wherever you pick.
-- Add evidence → Actions on files runs Summarise, Tables, Classify, Dates and parties, your own skills, or Convert to DocLang on a whole project or a tag, in the background; each run's results go into one report.
-- Library → Tags… tags files by rules (subfolder, year in the file name, words in the name), by AI choosing from tags you describe, or by hand. Tag chips with counts filter the Library and search.
+- Work → Actions on files runs Summarise, Tables, Classify, Dates and parties, your own skills, or Convert to DocLang on a whole project or a tag, in the background; each run's results go into one report.
+- Documents → Tags… tags files by rules (subfolder, year in the file name, words in the name), by AI choosing from tags you describe, or by hand. Tag chips with counts filter Documents and search.
 - A PDF with no text on any page is marked as a scan that needs OCR instead of failing; a PDF with some scanned pages is indexed, and the Library says how many pages couldn't be read.
 - `graph/Graph.kt` stores nodes and links per project. Types are plain text, so any schema fits, and every link names the source and page it came from. Multi-step questions run as recursive SQL queries with a step limit and loop protection. Deleting a file removes its links.
-- Add evidence offers two ways to fill the graph: Build graph with DeepSeek, or Import a graph file. A court ruling is detected and read in legal mode: two passes, fixed types and relations, and stricter checks that hold doubtful facts back. Up to 3 matching facts join the passages for an answer, cited as graph facts.
+- Two ways fill the graph: Build graph with DeepSeek on Ask, or Import a graph file from Documents → +. A court ruling is detected and read in legal mode: two passes, fixed types and relations, and stricter checks that hold doubtful facts back. Up to 3 matching facts join the passages for an answer, cited as graph facts.
 - A question asking for a list (which rulings were cited, which justices sat, what was decided) is answered directly from the graph, with no model writing it.
 - Jev has its own switch in settings, off by default.
 - Cloud table reading is removed. Tables found on the phone are still indexed row by row.
@@ -30,7 +31,7 @@ Built on the Plantroom members starter app from The AI Automators. A native Andr
 
 Try `blocked ventilation` in Mercer Court, or `cracked rubber foot under a water pump` in Calder House. Use a photo query to find visually related evidence. Tap a result to open its original. Add your own evidence and index it before searching.
 
-The additional `tap-hose-photos.zip` contains the four synthetic hose photographs used in the filmed photo-search example. Copy it to Downloads, then use Add evidence, Import a building pack, and index the new records in Library. These are fictional examples, not plumbing guidance.
+The additional `tap-hose-photos.zip` contains the four synthetic hose photographs used in the filmed photo-search example. Copy it to Downloads, then use Documents → +, Import a project pack, and index the new records in Documents. These are fictional examples, not plumbing guidance.
 
 ## Build and customise
 
@@ -52,7 +53,7 @@ The sample source files are in `sample-data`. App behaviour and screens are in `
 
 ## Costs, privacy and limits
 
-There are no inference API fees and no account is needed. Internet is used on your computer for the model and build downloads. Search and answers run on the phone. The one exception is optional: if you save an OpenRouter key in settings and turn Jev on, Jev reranks passages and checks citations in the cloud, which sends your question, passages and the answer's sentences to OpenRouter and TypeSafe. With a saved key, Build graph with DeepSeek in Add evidence sends the text of the project's indexed PDFs to OpenRouter and DeepSeek, and keeps only facts that pass checks against the cited page; the status line shows how many pages were sent and what it cost. Without a key, and always in incognito projects, the app makes no such calls. The model, source files and index stay in app-private storage; uninstalling deletes them. The keyboard's speech-to-text feature is separate from this app and its offline availability depends on your keyboard and downloaded language packs.
+There are no inference API fees and no account is needed. Internet is used on your computer for the model and build downloads. Search and answers run on the phone. The one exception is optional: if you save an OpenRouter key in settings and turn Jev on, Jev reranks passages and checks citations in the cloud, which sends your question, passages and the answer's sentences to OpenRouter and TypeSafe. With a saved key, Build graph with DeepSeek on Ask sends the text of the project's indexed PDFs to OpenRouter and DeepSeek, and keeps only facts that pass checks against the cited page; the status line shows how many pages were sent and what it cost. Without a key, and always in incognito projects, the app makes no such calls. The model, source files and index stay in app-private storage; uninstalling deletes them. The keyboard's speech-to-text feature is separate from this app and its offline availability depends on your keyboard and downloaded language packs.
 
 Search quality and speed vary with the device and files. This is a starter project, not a production maintenance or diagnostic system. Similarity is not a diagnosis or an asset identity. PDFs must contain selectable text, with a 1,000-page/100 MB limit; scanned PDFs need OCR elsewhere. Audio imports are limited to 60 seconds/50 MB; in-app recordings stop at 55 seconds. External building packs allow up to 500 records/600 MB uncompressed. A folder import takes up to 20,000 files; indexing runs in the background at roughly 0.4–0.6 s per PDF page on a Pixel 10 Pro Fold.
 

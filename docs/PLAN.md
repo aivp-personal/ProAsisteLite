@@ -15,7 +15,7 @@ ProAsisteLocal (`com.plantroom.pocket`) loads every chunk to search, which break
 | 6 | Google Drive connection: index files where they live | Planned |
 | 7 | Tables in the graph: columns on types, imported spreadsheets, counting questions | **Built** (2026-11-15) |
 | 8 | Memory: what you asked, what you prefer, what you do often | **Built** (2026-11-15) |
-| 9 | Three tabs: Ask, Documents, Work | Planned (2026-11-19) |
+| 9 | Three tabs: Ask, Documents, Work | **Built** (2026-11-19), not yet checked on the Fold |
 
 ## 1. Getting thousands of files in — done
 
@@ -437,3 +437,14 @@ sections in Work follows real use.
 Not in this step: a Graph tab (later, if the golden set shows the graph earning it); team sharing of reports and
 decisions (the web version); indexing search from DocLang blocks and keeping identifiers such as "17.292-26" or BL
 numbers whole in the word index, which are separate changes with their own golden-set check.
+
+**Built (2026-11-19), not yet checked on the Fold.** `ui/PlantroomScreen.kt`: a `tab` (ask, documents, work) replaces the
+`library` flag, the bar is three `NavTab`s (`plantroom.nav-ask`, `-documents`, `-work`), and the **+**
+(`plantroom.add`) is a floating button on Documents. The add sheet is now **Add documents** with seven rows. Ask, when
+no question is open, shows a **Graph and tables** section: Build graph with DeepSeek, Graph types, and the Tables,
+Graph and Graph review rows that were in Library. Work (`WorkPage`) holds Actions on files, History and the reports;
+`ReportsSheet` became `ReportsSection` in `ui/ReportsScreen.kt`, shown in Work with the exports. Notes for answers
+moved to settings. Changed from the plan above: the graph tools sit on Ask rather than in the graph screen's menu (that
+screen only opens once a graph exists); Work's decisions are each report's own and the CSV export, not yet a timeline
+across reports and files; no badge when a run ends; no long-press Save to Work (Save as report on the answer card does
+it). Skills stay inside Actions on files.

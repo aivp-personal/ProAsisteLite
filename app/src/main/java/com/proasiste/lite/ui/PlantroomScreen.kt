@@ -118,34 +118,38 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         var inspector by remember { mutableStateOf<UiItem?>(null) }
         var tagsSheet by remember { mutableStateOf(false) }
         var graphTypes by remember { mutableStateOf(false) }
-        var reportsSheet by remember { mutableStateOf(false) }
         var actionsSheet by remember { mutableStateOf(false) }
         var deleteSource by remember { mutableStateOf<UiItem?>(null) }
-        var library by rememberSaveable { mutableStateOf(false) }
+        // Three tabs: Ask (questions and answers), Documents (the collection, with its +) and Work (what you produced).
+        var tab by rememberSaveable { mutableStateOf(TAB_ASK) }
+        val library = tab == TAB_DOCUMENTS
+        val work = tab == TAB_WORK
         val listState = rememberLazyListState()
         val filter = state.filters.kind?.name ?: "All"
         val keyboard = LocalSoftwareKeyboardController.current
         val locked = state.busy || state.recording
-        val searching = !library && (state.isSearching || state.searchMillis != null)
+        val searching = tab == TAB_ASK && (state.isSearching || state.searchMillis != null)
         val showEvidence = library || searching
         val buildingName = projectName(state, state.buildingId)
         val visible = state.items.filter { it.buildingId == state.buildingId && (filter == "All" || it.kind.name == filter) }
+        val graphFacts = state.docReview.values.sumOf { it.facts }
         val cover = state.items.firstOrNull { it.buildingId == state.buildingId && it.kind == UiKind.PHOTO }
         // Successful-result guidance is already beside the result filters. Keep progress/errors
         // here without repeating the same advisory in a second full-width notice.
         val showStatus = state.status.isNotBlank() && !state.status.startsWith("Closest matches") && !state.status.startsWith("Coincidencias más cercanas") &&
-            (library || state.busy || state.error != null || state.recording)
+            (!searching || state.busy || state.error != null || state.recording)
         LaunchedEffect(state.buildingId) { inspector = null }
-        LaunchedEffect(library, searching, state.buildingId) { listState.scrollToItem(0) }
-        fun navigate(toLibrary: Boolean) {
+        LaunchedEffect(tab, searching, state.buildingId) { listState.scrollToItem(0) }
+        fun go(to: String) {
             actions.onStopAudio()
             actions.onQuery("")
             actions.onResetFilters()
             inspector = null
-            library = toLibrary
+            tab = to
             keyboard?.hide()
         }
-        BackHandler(enabled = !locked && !setup && !capture && !buildings && !newProject && deleteProject == null && !filterSheet && inspector == null && (library || searching)) {
+        fun navigate(toLibrary: Boolean) = go(if (toLibrary) TAB_DOCUMENTS else TAB_ASK)
+        BackHandler(enabled = !locked && !setup && !capture && !buildings && !newProject && deleteProject == null && !filterSheet && inspector == null && (tab != TAB_ASK || searching)) {
             navigate(false)
         }
 
@@ -175,28 +179,21 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                 Column(Modifier.background(Ink).navigationBarsPadding()) {
                     HorizontalDivider(color = Line)
                     Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = { navigate(false) }, enabled = !locked, modifier = Modifier.weight(1f).testTag("plantroom.nav-search")) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Glyph("search", tint = if (!library) Gold else Muted, modifier = Modifier.size(20.dp))
-                                Spacer(Modifier.height(3.dp)); Text(tr("Search", "Buscar"), color = if (!library) Gold else Muted, fontSize = 11.sp)
-                            }
-                        }
-                        TextButton(onClick = { navigate(true) }, enabled = !locked, modifier = Modifier.weight(1f).testTag("plantroom.nav-library")) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Glyph("library", tint = if (library) Gold else Muted, modifier = Modifier.size(20.dp))
-                                Spacer(Modifier.height(3.dp)); Text(tr("Library", "Biblioteca"), color = if (library) Gold else Muted, fontSize = 11.sp)
-                            }
-                        }
-                        Button(onClick = { capture = true }, enabled = !locked,
-                            shape = RoundedCornerShape(14.dp), modifier = Modifier.weight(1.6f).height(48.dp)) {
-                            Glyph("plus", tint = Ink, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp)); Text(tr("Add evidence", "Agregar evidencia"), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                        }
+                        NavTab(tr("Ask", "Consultar"), "search", tab == TAB_ASK, !locked, "plantroom.nav-ask", Modifier.weight(1f)) { go(TAB_ASK) }
+                        NavTab(tr("Documents", "Documentos"), "library", library, !locked, "plantroom.nav-documents", Modifier.weight(1f)) { go(TAB_DOCUMENTS) }
+                        NavTab(tr("Work", "Trabajo"), "report", work, !locked, "plantroom.nav-work", Modifier.weight(1f)) { go(TAB_WORK) }
                     }
+                }
+            },
+            // Adding is an action on the collection, so its button lives on Documents only.
+            floatingActionButton = {
+                if (library) FloatingActionButton(onClick = { if (!locked) capture = true }, containerColor = if (locked) Raised else Gold, contentColor = Ink,
+                    shape = RoundedCornerShape(16.dp), modifier = Modifier.testTag("plantroom.add").semantics { contentDescription = tr("Add documents", "Agregar documentos") }) {
+                    Glyph("plus", if (locked) Muted else Ink, Modifier.size(22.dp))
                 }
             }
         ) { padding ->
-            LazyColumn(Modifier.fillMaxSize().padding(padding).testTag("plantroom.evidence-list"), state = listState, contentPadding = PaddingValues(bottom = 24.dp)) {
+            LazyColumn(Modifier.fillMaxSize().padding(padding).testTag("plantroom.evidence-list"), state = listState, contentPadding = PaddingValues(bottom = if (library) 96.dp else 24.dp)) {
                 item {
                     Row(Modifier.fillMaxWidth().testTag("plantroom.building-selector").clickable(enabled = !locked) { buildings = true }.padding(horizontal = 22.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically) {
@@ -227,7 +224,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                         }
                     }
                 }
-                if (!library) item {
+                if (tab == TAB_ASK) item {
                     Column(Modifier.padding(horizontal = 20.dp)) {
                         Spacer(Modifier.height(if (searching) 12.dp else 76.dp))
                         OutlinedTextField(value = state.query, onValueChange = actions.onQuery, enabled = !locked,
@@ -260,6 +257,49 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                                 Text(tr("Prepare your library for search", "Prepara tu biblioteca para buscar"), color = Gold)
                             }
                         }
+                    }
+                }
+                // Ask's second half: what the project's graph and tables answer exactly, and the graph's own tools.
+                if (tab == TAB_ASK && !searching && state.totalCount > 0) item {
+                    Column(Modifier.padding(start = 22.dp, end = 22.dp, top = 28.dp, bottom = 2.dp)) {
+                        Eyebrow(tr("GRAPH AND TABLES", "GRAFO Y TABLAS"))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = actions.onBuildGraph, enabled = !locked && state.jevKeySaved, contentPadding = PaddingValues(horizontal = 0.dp), modifier = Modifier.testTag("plantroom.build-graph")) {
+                                Text(tr("Build graph with DeepSeek", "Construir el grafo con DeepSeek"), fontSize = 12.sp)
+                            }
+                            Spacer(Modifier.width(16.dp))
+                            TextButton(onClick = { graphTypes = true }, enabled = !locked, contentPadding = PaddingValues(horizontal = 0.dp), modifier = Modifier.testTag("plantroom.graph-types")) {
+                                Text(tr("Graph types", "Tipos del grafo"), fontSize = 12.sp)
+                            }
+                        }
+                        if (!state.jevKeySaved) Text(tr("Building the graph sends this project's PDF text to OpenRouter and DeepSeek: save your key in settings first. Never for incognito projects.",
+                            "Construir el grafo envía el texto de los PDF de este proyecto a OpenRouter y DeepSeek: primero guarda tu clave en la configuración. Nunca en proyectos incógnito."),
+                            color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+                    }
+                }
+                if (tab == TAB_ASK && !searching && (state.reportCount > 0 || state.tables.isNotEmpty())) item {
+                    // The project's table: rulings with their date, outcome, judges… read from the files.
+                    val rows = state.tables.firstOrNull()?.second ?: 0
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).background(Steel, RoundedCornerShape(14.dp))
+                        .clickable(enabled = !locked) { actions.onOpenTable() }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.table-row"), verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (rows > 0) tr("Tables · ${state.tables.joinToString(" · ") { "${it.first} ${it.second}" }}", "Tablas · ${state.tables.joinToString(" · ") { "${it.first} ${it.second}" }}") else tr("Rulings table · read from files", "Tabla de fallos · leer de los archivos"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        Glyph("arrow", Gold, Modifier.size(14.dp))
+                    }
+                }
+                if (tab == TAB_ASK && !searching && graphFacts > 0) item {
+                    // The project's graph, drawn: its own row, like the reports.
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).background(Steel, RoundedCornerShape(14.dp))
+                        .clickable(enabled = !locked) { actions.onOpenGraph(null) }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.graph-row"), verticalAlignment = Alignment.CenterVertically) {
+                        Text(tr("Graph · $graphFacts facts", "Grafo · $graphFacts datos"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Glyph("arrow", Gold, Modifier.size(14.dp))
+                    }
+                }
+                if (tab == TAB_ASK && !searching && state.reviewCount > 0) item {
+                    // Graph facts the checks held back wait here for the steward: its own row, not a kind of file.
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).background(Steel, RoundedCornerShape(14.dp))
+                        .clickable(enabled = !locked) { actions.onOpenReview() }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.review-row"), verticalAlignment = Alignment.CenterVertically) {
+                        Text(tr("Graph review · ${state.reviewCount} facts pending", "Revisión del grafo · ${state.reviewCount} datos pendientes"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Glyph("arrow", Gold, Modifier.size(14.dp))
                     }
                 }
                 if (library && state.modelReady && (state.remainingCount > 0 || state.queuedCount > 0) && state.indexing == null && !locked) item {
@@ -312,56 +352,14 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                         }
                     }
                 }
+                if (work) item {
+                    WorkPage(state, actions, locked, onActions = { actionsSheet = true })
+                }
                 val answer = state.answer
                 if (searching && answer != null) item {
                     AnswerCard(answer, incognito = state.projects.firstOrNull { it.id == state.buildingId }?.incognito == true,
                         onSource = { inspector = it }, onShare = actions.onShareAnswer, onSave = actions.onSaveAnswer, onAcceptNote = actions.onAcceptNote, onDismissNote = actions.onDismissNote)
                     if (state.timing.isNotEmpty()) Text(state.timing, color = Muted, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 24.dp, vertical = 2.dp).testTag("plantroom.timing"))
-                }
-                if (showEvidence && !searching) item {
-                    // Saved answers and notes: their own row, like the graph review.
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).background(Steel, RoundedCornerShape(14.dp))
-                        .clickable(enabled = !locked) { reportsSheet = true }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.reports-row"), verticalAlignment = Alignment.CenterVertically) {
-                        Text(tr("Reports · ${state.reports.size}", "Informes · ${state.reports.size}"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                        Glyph("arrow", Gold, Modifier.size(14.dp))
-                    }
-                }
-                if (showEvidence && !searching) item {
-                    // What was asked here before, and the notes that go with every answer.
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Row(Modifier.weight(1f).background(Steel, RoundedCornerShape(14.dp)).clickable(enabled = !locked) { actions.onOpenHistory() }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.history-row"), verticalAlignment = Alignment.CenterVertically) {
-                            Text(tr("History · ${state.historyCount}", "Historial · ${state.historyCount}"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f)); Glyph("arrow", Gold, Modifier.size(14.dp))
-                        }
-                        Row(Modifier.weight(1f).background(Steel, RoundedCornerShape(14.dp)).clickable(enabled = !locked) { actions.onOpenMemory() }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.memory-row"), verticalAlignment = Alignment.CenterVertically) {
-                            Text(tr("Notes · ${state.notes.size}", "Notas · ${state.notes.size}"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f)); Glyph("arrow", Gold, Modifier.size(14.dp))
-                        }
-                    }
-                }
-                if (showEvidence && !searching && (state.reportCount > 0 || state.tables.isNotEmpty())) item {
-                    // The project's table: rulings with their date, outcome, judges… read from the files.
-                    val rows = state.tables.firstOrNull()?.second ?: 0
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).background(Steel, RoundedCornerShape(14.dp))
-                        .clickable(enabled = !locked) { actions.onOpenTable() }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.table-row"), verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (rows > 0) tr("Tables · ${state.tables.joinToString(" · ") { "${it.first} ${it.second}" }}", "Tablas · ${state.tables.joinToString(" · ") { "${it.first} ${it.second}" }}") else tr("Rulings table · read from files", "Tabla de fallos · leer de los archivos"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                        Glyph("arrow", Gold, Modifier.size(14.dp))
-                    }
-                }
-                val graphFacts = state.docReview.values.sumOf { it.facts }
-                if (showEvidence && !searching && graphFacts > 0) item {
-                    // The project's graph, drawn: its own row, like the reports.
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).background(Steel, RoundedCornerShape(14.dp))
-                        .clickable(enabled = !locked) { actions.onOpenGraph(null) }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.graph-row"), verticalAlignment = Alignment.CenterVertically) {
-                        Text(tr("Graph · $graphFacts facts", "Grafo · $graphFacts datos"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                        Glyph("arrow", Gold, Modifier.size(14.dp))
-                    }
-                }
-                if (showEvidence && !searching && state.reviewCount > 0) item {
-                    // Graph facts the checks held back wait here for the steward: its own row, not a kind of file.
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).background(Steel, RoundedCornerShape(14.dp))
-                        .clickable(enabled = !locked) { actions.onOpenReview() }.padding(horizontal = 16.dp, vertical = 14.dp).testTag("plantroom.review-row"), verticalAlignment = Alignment.CenterVertically) {
-                        Text(tr("Graph review · ${state.reviewCount} facts pending", "Revisión del grafo · ${state.reviewCount} datos pendientes"), color = Mist, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                        Glyph("arrow", Gold, Modifier.size(14.dp))
-                    }
                 }
                 if (showEvidence) item {
                     Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 22.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -441,7 +439,6 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         if (filterSheet) FilterSheet(state, actions, onClose = { filterSheet = false })
         if (tagsSheet) TagsSheet(state, actions, onClose = { tagsSheet = false })
         if (graphTypes) GraphTypesSheet(state, actions, onClose = { graphTypes = false })
-        if (reportsSheet) ReportsSheet(state, actions, onClose = { reportsSheet = false })
         if (actionsSheet) ActionsSheet(state, actions, onClose = { actionsSheet = false })
         state.openReport?.let { r -> ReportScreen(r, state, actions, onOpenSource = actions.onOpenSource) }
         state.graph?.let { GraphScreen(it, actions) }
@@ -532,16 +529,12 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         if (capture) ModalBottomSheet(onDismissRequest = { capture = false }, containerColor = Steel) {
           // Scrolls: on a short screen the last actions would otherwise sit below the edge, out of reach.
           Column(Modifier.verticalScroll(rememberScrollState())) {
-            SheetHeader(tr("Add evidence", "Agregar evidencia"), tr("Saved to $buildingName on this phone.", "Se guarda en $buildingName en este teléfono."))
+            SheetHeader(tr("Add documents", "Agregar documentos"), tr("Saved to $buildingName on this phone.", "Se guarda en $buildingName en este teléfono."))
             ActionRow(tr("Take a photo", "Tomar una foto"), tr("Save a new observation to this project", "Guarda una nueva observación en este proyecto"), "image", enabled = !locked) { capture = false; navigate(true); actions.onCapturePhoto() }
             ActionRow(tr("Import files", "Importar archivos"), tr("Photos, PDF reports and short recordings", "Fotos, informes PDF y grabaciones cortas"), "plus", enabled = !locked) { capture = false; navigate(true); actions.onImportFiles() }
             ActionRow(tr("Import a table", "Importar una tabla"), tr("A CSV or Excel (.xlsx) list, such as rulings with their dates and outcomes: each row joins the graph", "Una lista CSV o Excel (.xlsx), como fallos con sus fechas y resultados: cada fila se une al grafo"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportTable() }
             ActionRow(tr("Import a folder", "Importar una carpeta"), tr("Every PDF, photo and recording in it and its subfolders, imported and indexed in the background", "Todos los PDF, fotos y grabaciones de la carpeta y sus subcarpetas, importados e indexados en segundo plano"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportFolder() }
             ActionRow(if (state.recording) tr("Stop & save recording", "Detener y guardar grabación") else tr("Record a voice note", "Grabar una nota de voz"), tr("Capture an observation during your visit", "Registra una observación durante tu visita"), "audio", enabled = !state.busy) { capture = false; navigate(true); actions.onRecordAudio() }
-            ActionRow(tr("Build graph with DeepSeek", "Construir el grafo con DeepSeek"), tr("Sends this project's PDF text to OpenRouter and DeepSeek with your saved key. Never for incognito projects.", "Envía el texto de los PDF de este proyecto a OpenRouter y DeepSeek con tu clave guardada. Nunca en proyectos incógnito."), "library", enabled = !locked && state.jevKeySaved) { capture = false; navigate(true); actions.onBuildGraph() }
-            ActionRow(tr("Actions on files", "Acciones sobre archivos"), tr("Summarise, extract tables, classify, find dates and parties, your own skills, or convert to DocLang, on a whole project or a tag", "Resumir, extraer tablas, clasificar, buscar fechas y partes, tus habilidades, o convertir a DocLang, sobre todo el proyecto o una etiqueta"), "library", enabled = !locked) { capture = false; actionsSheet = true }
-            ActionRow(tr("Graph types", "Tipos del grafo"), if (state.graphSchema.custom) tr("My types: ${state.graphSchema.nodes.size} types, ${state.graphSchema.links.size} links", "Mis tipos: ${state.graphSchema.nodes.size} tipos, ${state.graphSchema.links.size} vínculos")
-                else tr("Automatic: legal types for Chilean rulings, free-form for other files", "Automático: tipos legales para fallos chilenos, libres para otros archivos"), "settings", enabled = !locked) { capture = false; graphTypes = true }
             ActionRow(tr("Import a graph file", "Importar un archivo de grafo"), tr("Facts about a file already in this project", "Datos sobre un archivo que ya está en este proyecto"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportGraph() }
             ActionRow(tr("Import a project pack", "Importar un paquete de proyecto"), tr("Load a prepared collection from local storage", "Carga una colección preparada desde el almacenamiento local"), "library", enabled = !locked) { capture = false; navigate(true); actions.onImportCorpus() }
             Spacer(Modifier.height(26.dp))
@@ -578,6 +571,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                 HorizontalDivider(Modifier.padding(horizontal = 24.dp), color = Line)
                 JevKeySection(state, actions)
                 HorizontalDivider(Modifier.padding(horizontal = 24.dp), color = Line)
+                ActionRow(tr("Notes for answers · ${state.notes.size}", "Notas para las respuestas · ${state.notes.size}"), tr("Preferences and facts that go with every answer", "Preferencias y datos que acompañan cada respuesta"), "report", enabled = !locked) { setup = false; actions.onOpenMemory() }
                 ActionRow(tr("Import project pack", "Importar paquete de proyecto"), tr("Add a prepared collection from local storage", "Agrega una colección preparada desde el almacenamiento local"), "library", enabled = !locked) { setup = false; actions.onImportCorpus() }
                 Text(tr("Search retrieves original evidence. It does not diagnose faults or generate maintenance instructions.", "La búsqueda recupera la evidencia original. No diagnostica fallas ni genera instrucciones de mantenimiento."), Modifier.padding(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 35.dp), fontFamily = NotoSerif, color = Muted, fontSize = 12.sp, lineHeight = 19.sp)
             }
@@ -1033,6 +1027,40 @@ internal fun SheetHeader(title: String, subtitle: String) {
     Column(Modifier.padding(start = 24.dp, end = 24.dp, top = 6.dp, bottom = 14.dp)) {
         Text(title, fontSize = 27.sp, fontWeight = FontWeight.Medium, letterSpacing = (-.7).sp)
         Spacer(Modifier.height(7.dp)); Text(subtitle, color = Muted, fontSize = 13.sp, lineHeight = 20.sp, fontFamily = NotoSerif)
+    }
+}
+
+private const val TAB_ASK = "ask"
+private const val TAB_DOCUMENTS = "documents"
+private const val TAB_WORK = "work"
+
+/** One tab of the bottom bar: its glyph over its name, gold when selected. */
+@Composable
+private fun NavTab(label: String, icon: String, selected: Boolean, enabled: Boolean, tag: String, modifier: Modifier, onClick: () -> Unit) {
+    TextButton(onClick = onClick, enabled = enabled, modifier = modifier.testTag(tag)) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Glyph(icon, if (selected) Gold else Muted, Modifier.size(20.dp))
+            Spacer(Modifier.height(3.dp)); Text(label, color = if (selected) Gold else Muted, fontSize = 11.sp)
+        }
+    }
+}
+
+/**
+ * The Work tab: what was produced from the collection. Background runs show above it, as on every tab. Then actions on
+ * files and skills, the reports with their decisions, the questions asked, and the project-wide exports.
+ */
+@Composable
+private fun WorkPage(state: UiState, actions: UiActions, locked: Boolean, onActions: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp).testTag("plantroom.work")) {
+        Column(Modifier.padding(horizontal = 22.dp)) {
+            Text(tr("Work", "Trabajo"), fontSize = 25.sp, fontWeight = FontWeight.Medium, letterSpacing = (-.7).sp)
+            Text(tr("Reports, decisions and runs from this project.", "Informes, decisiones y ejecuciones de este proyecto."), color = Muted, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(6.dp))
+        ActionRow(tr("Actions on files", "Acciones sobre archivos"), tr("Summarise, extract tables, classify, find dates and parties, your own skills, or convert to DocLang, on a whole project or a tag", "Resumir, extraer tablas, clasificar, buscar fechas y partes, tus habilidades, o convertir a DocLang, sobre todo el proyecto o una etiqueta"), "library", enabled = !locked) { onActions() }
+        ActionRow(tr("History · ${state.historyCount}", "Historial · ${state.historyCount}"), tr("Questions asked in this project, with their answers and sources", "Preguntas hechas en este proyecto, con sus respuestas y fuentes"), "search", enabled = !locked) { actions.onOpenHistory() }
+        HorizontalDivider(Modifier.padding(horizontal = 24.dp, vertical = 8.dp), color = Line)
+        ReportsSection(state, actions)
     }
 }
 

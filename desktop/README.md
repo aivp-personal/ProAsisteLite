@@ -3,7 +3,7 @@
 The phone indexes about 0.6 s a page. A folder of thousands of PDFs is faster to index here and copy over: the
 computer reads and splits every PDF with the app's own code, embeds the pieces with the app's own model file
 (EmbeddingGemma 2, `embeddinggemma-2-740m.litertlm`, on the CPU through MediaPipe 1.1.0, as the phone does), and writes
-`proasiste-index.db` beside the PDFs. On the phone, **Add evidence → Import a folder** on that folder loads the index
+`proasiste-index.db` beside the PDFs. On the phone, **Documents → + → Import a folder** on that folder loads the index
 first; each file whose contents match is then indexed in a moment instead of with the model.
 
 Measured (2026-11-15): vectors made here match the phone's at cosine 0.9995 or better; reading runs at about 260 pages a
@@ -35,7 +35,7 @@ Hugging Face: their vectors differ (cosine ~0.985) because the phone's file is q
    adb push "C:/path/to/folder" /sdcard/Documents/ProAsisteLite/<name>
    ```
 
-5. On the phone, in the project it belongs to: **Add evidence → Import a folder**, pick it. The status line says how many
+5. On the phone, in the project it belongs to: **Documents → + → Import a folder**, pick it. The status line says how many
    files came with their index ready.
 
 A pack is tied to the app's index version (`GemmaEmbedder.INDEX_VERSION`): after a change to how text is split or
