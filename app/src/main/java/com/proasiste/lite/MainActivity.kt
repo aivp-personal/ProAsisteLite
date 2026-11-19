@@ -71,7 +71,7 @@ class MainActivity:ComponentActivity(){
         photoIsImport=savedInstanceState?.getBoolean("photoIsImport")?:false
         setContent{
             PlantroomScreen(model.state,UiActions(
-                onBuilding={stopAudio();model.setBuilding(it)},onCreateProject={number,name->stopAudio();model.createProject(number,name)},onDeleteProject={stopAudio();model.deleteProject(it)},
+                onBuilding={stopAudio();model.setBuilding(it)},onCreateProject={number,name,goal,due->stopAudio();model.createProject(number,name,goal,due)},onUpdateProject=model::updateProject,onDeleteProject={stopAudio();model.deleteProject(it)},
                 onToggleIncognito=model::toggleIncognito,onLanguage=model::setSpanish,onDeleteSource={stopAudio();model.deleteSource(it)},
                 onShareAnswer=model::shareAnswer,onDismissShare=model::dismissShare,
                 onSaveJevKey=model::saveJevKey,onRemoveJevKey=model::removeJevKey,onJevEnabled=model::setJevEnabled,

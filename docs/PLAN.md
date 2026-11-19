@@ -448,3 +448,16 @@ moved to settings. Changed from the plan above: the graph tools sit on Ask rathe
 screen only opens once a graph exists); Work's decisions are each report's own and the CSV export, not yet a timeline
 across reports and files; no badge when a run ends; no long-press Save to Work (Save as report on the answer card does
 it). Skills stay inside Actions on files.
+
+## Project picker: goals, due dates, and PARA groups (2026-11-19)
+
+**Built, not yet checked on the Fold.** A project's number letter is now its kind, PARA-style: **P** a project with an
+end, **D** a domain (an ongoing area), **R** a resource, **A** an archive (`ProjectKind` in `ui/UiContract.kt`). The
+picker lists Projects first, then Domains, Resources and Archives, each under its heading once there is more than one
+kind. New project picks the kind with chips (which sets the next number, such as D01) and, for P projects, asks a
+**goal** (up to 200 characters) and a **due date** (yyyy-mm-dd, typed). The picker shows the goal and "Due 2026-12-15 ·
+26 days", or "Overdue by 3 days" in red. The gear on each row edits the name, goal and due date. Both are saved with
+the project list (`goal`, `due` in the projects JSON); projects saved before have neither. Tested in `ProjectsTest`.
+
+Not yet: moving a finished project to the archives (its number is where its files are kept, so a P project can't
+become A without moving its files); a calendar picker for the date; showing the goal on Ask.

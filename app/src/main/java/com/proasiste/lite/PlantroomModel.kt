@@ -100,15 +100,30 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
         return projectsFromJson(raw)?:SAMPLE_PROJECTS
     }
     /** Returns an error message, or null when the project was created and selected. */
-    fun createProject(number:String,name:String):String?{
+    fun createProject(number:String,name:String,goal:String="",due:String=""):String?{
         if(state.busy||state.recording)return tr("Wait for the current task to finish.", "Espera a que termine la tarea actual.")
         val id=number.trim().uppercase();val title=name.trim()
-        if(!Regex("P\\d{2,3}").matches(id))return tr("Project number must look like P01.", "El número de proyecto debe ser como P01.")
+        if(!Regex("[PDRA]\\d{2,3}").matches(id))return tr("The number must be a letter and two digits: P01 for a project, D01 a domain, R01 a resource, A01 an archive.", "El número debe ser una letra y dos dígitos: P01 un proyecto, D01 un dominio, R01 un recurso, A01 un archivo.")
         if(id in projectIds())return tr("$id already exists.", "$id ya existe.")
+        projectError(title,goal,due)?.let{return it}
+        val project=UiProject(id,title,goal=goal.trim(),due=due.trim())
+        val projects=(state.projects+project).sortedWith(ProjectKind.ORDER)
+        saveProjects(projects);state=state.copy(projects=projects);setBuilding(id);return null
+    }
+    /** Saves a project's name, goal and due date. Returns an error message, or null when saved. */
+    fun updateProject(id:String,name:String,goal:String,due:String):String?{
+        if(id !in projectIds())return tr("Unknown project", "Proyecto desconocido")
+        val title=name.trim();projectError(title,goal,due)?.let{return it}
+        val projects=state.projects.map{if(it.id==id)it.copy(name=title,goal=goal.trim(),due=due.trim())else it}
+        saveProjects(projects);state=state.copy(projects=projects,status=tr("Saved $id $title", "Guardado $id $title"));return null
+    }
+    private fun projectError(title:String,goal:String,due:String):String?{
         if(title.isEmpty())return tr("Enter a project name.", "Ingresa un nombre de proyecto.")
         if(title.length>60)return tr("Keep the project name under 60 characters.", "El nombre del proyecto debe tener menos de 60 caracteres.")
-        val projects=(state.projects+UiProject(id,title)).sortedBy{it.id.drop(1).toInt()}
-        saveProjects(projects);state=state.copy(projects=projects);setBuilding(id);return null
+        if(goal.trim().length>200)return tr("Keep the goal under 200 characters.", "El objetivo debe tener menos de 200 caracteres.")
+        val d=due.trim()
+        if(d.isNotEmpty()&&runCatching{java.time.LocalDate.parse(d)}.isFailure)return tr("Write the due date as yyyy-mm-dd, such as 2026-12-15.", "Escribe la fecha límite como aaaa-mm-dd, por ejemplo 2026-12-15.")
+        return null
     }
     private fun saveProjects(projects:List<UiProject>){prefs.edit().putString("projects",projectsToJson(projects)).apply()}
     /** Sets who writes this project's answers: an OpenRouter model id, or "" for Gemini Nano on the phone. */
@@ -1138,8 +1153,8 @@ class PlantroomModel(app:Application):AndroidViewModel(app){
                         (filters.dateTo.isEmpty() || item.date <= filters.dateTo)))
         }
         /** Projects as stored in preferences, or null when [raw] can't be read. */
-        fun projectsFromJson(raw:String):List<UiProject>? =runCatching{val a=JSONArray(raw);(0 until a.length()).map{a.getJSONObject(it).let{j->UiProject(j.getString("id"),j.getString("name"),j.optBoolean("incognito",false),j.optString("answer_model",""))}}}.getOrNull()?.takeIf{it.isNotEmpty()}
-        fun projectsToJson(projects:List<UiProject>):String =JSONArray(projects.map{JSONObject().put("id",it.id).put("name",it.name).put("incognito",it.incognito).put("answer_model",it.answerModel)}).toString()
+        fun projectsFromJson(raw:String):List<UiProject>? =runCatching{val a=JSONArray(raw);(0 until a.length()).map{a.getJSONObject(it).let{j->UiProject(j.getString("id"),j.getString("name"),j.optBoolean("incognito",false),j.optString("answer_model",""),j.optString("goal",""),j.optString("due",""))}}}.getOrNull()?.takeIf{it.isNotEmpty()}?.sortedWith(ProjectKind.ORDER)
+        fun projectsToJson(projects:List<UiProject>):String =JSONArray(projects.map{JSONObject().put("id",it.id).put("name",it.name).put("incognito",it.incognito).put("answer_model",it.answerModel).put("goal",it.goal).put("due",it.due)}).toString()
         fun copyBounded(input:java.io.InputStream,out:java.io.OutputStream,limit:Long){val buf=ByteArray(65536);var count=0L;while(true){val n=input.read(buf);if(n<0)break;count+=n;require(count<=limit){tr("File exceeds import size limit", "El archivo supera el límite de tamaño de importación")};out.write(buf,0,n)}}
     }
 }

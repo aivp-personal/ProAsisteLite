@@ -5,10 +5,26 @@ enum class UiKind(private val en: String, private val es: String) {
     val label: String get() = tr(en, es)
 }
 
-/** A project: number in PXX form (also the storage key for its sources) and a display name.
+/** A project: a number (also the storage key for its sources) and a display name. The number's letter is its kind,
+ *  PARA-style: P a project with an end, D a domain (an ongoing area), R a resource, A an archive; see [ProjectKind].
  *  [incognito] masks personal data in anything shared out of the project, and keeps answers on the phone.
- *  [answerModel] is the OpenRouter model that writes its answers; "" means Gemini Nano on the phone. */
-data class UiProject(val id: String, val name: String, val incognito: Boolean = false, val answerModel: String = "")
+ *  [answerModel] is the OpenRouter model that writes its answers; "" means Gemini Nano on the phone.
+ *  [goal] says what the project is for and [due] when it ends (yyyy-MM-dd); both may be empty, and are set on P projects. */
+data class UiProject(val id: String, val name: String, val incognito: Boolean = false, val answerModel: String = "",
+    val goal: String = "", val due: String = "") {
+    val kind: ProjectKind get() = ProjectKind.of(id)
+}
+
+/** The four kinds of project, in the order the picker lists them. Only [PROJECT] has a goal and a due date. */
+enum class ProjectKind(val letter: Char, private val en: String, private val es: String) {
+    PROJECT('P', "Projects", "Proyectos"), DOMAIN('D', "Domains", "Dominios"), RESOURCE('R', "Resources", "Recursos"), ARCHIVE('A', "Archives", "Archivos");
+    val label: String get() = tr(en, es)
+    companion object {
+        fun of(id: String): ProjectKind = entries.firstOrNull { it.letter == id.firstOrNull()?.uppercaseChar() } ?: PROJECT
+        /** Kind first (P, D, R, A), then number: the picker's order. */
+        val ORDER: Comparator<UiProject> = compareBy<UiProject>({ it.kind.ordinal }, { it.id.drop(1).toIntOrNull() ?: Int.MAX_VALUE }, { it.id })
+    }
+}
 
 /** A model the user can pick to write answers. Prices are US dollars per million tokens. */
 data class UiModel(val id: String, val name: String, val inputPerMillion: Double, val outputPerMillion: Double, val context: Int)
@@ -286,7 +302,10 @@ data class UiState(
 data class UiActions(
     val onBuilding: (String) -> Unit = {},
     /** Returns an error message, or null when the project was created and selected. */
-    val onCreateProject: (String, String) -> String? = { _, _ -> null },
+    /** Number, name, goal, due date (yyyy-MM-dd or ""). */
+    val onCreateProject: (String, String, String, String) -> String? = { _, _, _, _ -> null },
+    /** Changes a project's name, goal and due date; returns an error message, or null when saved. */
+    val onUpdateProject: (String, String, String, String) -> String? = { _, _, _, _ -> null },
     val onDeleteProject: (String) -> Unit = {},
     val onToggleIncognito: (String) -> Unit = {},
     /** true switches the app to Spanish, false to English. */

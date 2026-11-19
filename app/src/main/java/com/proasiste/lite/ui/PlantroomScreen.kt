@@ -113,6 +113,7 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         var capture by rememberSaveable { mutableStateOf(false) }
         var buildings by rememberSaveable { mutableStateOf(false) }
         var newProject by rememberSaveable { mutableStateOf(false) }
+        var editProject by rememberSaveable { mutableStateOf<String?>(null) }
         var deleteProject by rememberSaveable { mutableStateOf<String?>(null) }
         var filterSheet by rememberSaveable { mutableStateOf(false) }
         var inspector by remember { mutableStateOf<UiItem?>(null) }
@@ -450,13 +451,28 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
         if (buildings) ModalBottomSheet(onDismissRequest = { buildings = false }, containerColor = Steel) {
             SheetHeader(tr("Projects", "Proyectos"), tr("Choose the project you're working in.", "Elige el proyecto en el que trabajas."))
             Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
-                state.projects.forEach { project ->
-                    Row(Modifier.fillMaxWidth().clickable(enabled = !locked) { actions.onBuilding(project.id); buildings = false }.padding(horizontal = 24.dp, vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                // Projects first, then Domains, Resources and Archives (PARA), each under its own heading.
+                val groups = state.projects.groupBy { it.kind }
+                ProjectKind.entries.forEach { kind ->
+                  val members = groups[kind].orEmpty()
+                  if (members.isNotEmpty()) {
+                    if (groups.size > 1) Text(kind.label.uppercase(Locale.getDefault()), color = Muted, fontSize = 11.sp, letterSpacing = 1.sp,
+                        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 14.dp, bottom = 2.dp).testTag("plantroom.project-group.${kind.letter}"))
+                    members.forEach { project ->
+                    Row(Modifier.fillMaxWidth().clickable(enabled = !locked) { actions.onBuilding(project.id); buildings = false }.padding(start = 24.dp, end = 12.dp, top = 14.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(project.id, color = Gold, fontSize = 13.sp, fontFamily = OpenSauce,
                             modifier = Modifier.background(Raised, RoundedCornerShape(8.dp)).padding(horizontal = 9.dp, vertical = 7.dp))
                         Spacer(Modifier.width(14.dp))
-                        Text(project.name, fontWeight = FontWeight.Medium, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                        Column(Modifier.weight(1f)) {
+                            Text(project.name, fontWeight = FontWeight.Medium, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (project.goal.isNotBlank()) Text(project.goal, color = Muted, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            dueLabel(project.due)?.let { (label, late) -> Text(label, color = if (late) Warning else Gold, fontSize = 11.sp) }
+                        }
                         if (state.buildingId == project.id) Glyph("check", Gold)
+                        IconButton(onClick = { buildings = false; editProject = project.id }, enabled = !locked,
+                            modifier = Modifier.testTag("plantroom.edit-project.${project.id}").semantics { contentDescription = tr("Edit ${project.id} ${project.name}", "Editar ${project.id} ${project.name}") }) {
+                            Glyph("settings", Muted, Modifier.size(20.dp))
+                        }
                         IconButton(onClick = { actions.onToggleIncognito(project.id) }, enabled = !locked,
                             modifier = Modifier.testTag("plantroom.incognito.${project.id}").semantics {
                                 contentDescription = tr("Incognito ${if (project.incognito) "on" else "off"} for ${project.id}: masks personal data in shared text",
@@ -469,13 +485,16 @@ fun PlantroomScreen(state: UiState, actions: UiActions) {
                         }
                     }
                 }
+                  }
+                }
                 HorizontalDivider(Modifier.padding(horizontal = 24.dp), color = Line)
-                ActionRow(tr("New project", "Nuevo proyecto"), tr("Add a project number and name", "Agrega un número y un nombre de proyecto"), "plus", enabled = !locked) { buildings = false; newProject = true }
+                ActionRow(tr("New project", "Nuevo proyecto"), tr("A project with a goal and due date, or a domain, resource or archive", "Un proyecto con objetivo y fecha límite, o un dominio, recurso o archivo"), "plus", enabled = !locked) { buildings = false; newProject = true }
                 Spacer(Modifier.height(28.dp))
             }
         }
 
         if (newProject) NewProjectDialog(state, actions, onClose = { newProject = false })
+        editProject?.let { id -> state.projects.firstOrNull { it.id == id }?.let { EditProjectDialog(it, actions, onClose = { editProject = null }) } }
 
         deleteProject?.let { id ->
             val count = if (state.buildingId == id) tr(" (${state.totalCount} sources)", " (${state.totalCount} fuentes)") else ""
@@ -1085,30 +1104,101 @@ internal fun Eyebrow(text: String, color: Color = Muted) {
 
 private fun projectName(state: UiState, id: String) = state.projects.firstOrNull { it.id == id }?.name ?: id
 
-private fun nextProjectNumber(projects: List<UiProject>): String =
-    "P%02d".format((projects.mapNotNull { it.id.drop(1).toIntOrNull() }.maxOrNull() ?: 0) + 1)
+private fun nextProjectNumber(projects: List<UiProject>, kind: ProjectKind = ProjectKind.PROJECT): String =
+    "%c%02d".format(kind.letter, (projects.filter { it.kind == kind }.mapNotNull { it.id.drop(1).toIntOrNull() }.maxOrNull() ?: 0) + 1)
+
+/** "Due 2026-12-15 · 26 days", or "Overdue by 3 days" with true; null when there is no date or it can't be read. */
+private fun dueLabel(due: String): Pair<String, Boolean>? {
+    val date = runCatching { java.time.LocalDate.parse(due.trim()) }.getOrNull() ?: return null
+    val days = java.time.temporal.ChronoUnit.DAYS.between(java.time.LocalDate.now(), date)
+    return when {
+        days < 0 -> tr("Overdue by ${-days} day${if (days == -1L) "" else "s"} · $date", "Atrasado ${-days} día${if (days == -1L) "" else "s"} · $date") to true
+        days == 0L -> tr("Due today", "Vence hoy") to true
+        else -> tr("Due $date · $days day${if (days == 1L) "" else "s"}", "Vence $date · $days día${if (days == 1L) "" else "s"}") to false
+    }
+}
+
+/** Goal and due date fields, shown for P projects. */
+@Composable
+private fun GoalAndDue(goal: String, onGoal: (String) -> Unit, due: String, onDue: (String) -> Unit, onDone: () -> Unit) {
+    OutlinedTextField(value = goal, onValueChange = { onGoal(it.take(200)) }, maxLines = 3,
+        label = { Text(tr("Goal", "Objetivo")) }, placeholder = { Text(tr("What this project must achieve", "Lo que este proyecto debe lograr"), color = Muted) },
+        modifier = Modifier.fillMaxWidth().testTag("plantroom.project-goal"))
+    Spacer(Modifier.height(10.dp))
+    OutlinedTextField(value = due, onValueChange = { onDue(it.filter { c -> c.isDigit() || c == '-' }.take(10)) }, singleLine = true,
+        label = { Text(tr("Due date (yyyy-mm-dd)", "Fecha límite (aaaa-mm-dd)")) }, placeholder = { Text("2026-12-15", color = Muted) },
+        modifier = Modifier.fillMaxWidth().testTag("plantroom.project-due"),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { onDone() }))
+    dueLabel(due)?.let { (label, late) -> Text(label, color = if (late) Warning else Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp)) }
+}
 
 @Composable
 private fun NewProjectDialog(state: UiState, actions: UiActions, onClose: () -> Unit) {
     var number by rememberSaveable { mutableStateOf(nextProjectNumber(state.projects)) }
     var name by rememberSaveable { mutableStateOf("") }
+    var goal by rememberSaveable { mutableStateOf("") }
+    var due by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
-    fun create() { error = actions.onCreateProject(number, name); if (error == null) onClose() }
+    val kind = ProjectKind.of(number)
+    fun create() {
+        val project = kind == ProjectKind.PROJECT
+        error = actions.onCreateProject(number, name, if (project) goal else "", if (project) due else "")
+        if (error == null) onClose()
+    }
     AlertDialog(onDismissRequest = onClose, containerColor = Steel,
         title = { Text(tr("New project", "Nuevo proyecto")) },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                // The kind sets the number's letter: P project, D domain, R resource, A archive.
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ProjectKind.entries.forEach { k ->
+                        FilterChip(selected = kind == k, onClick = { number = nextProjectNumber(state.projects, k); error = null },
+                            label = { Text(k.label, fontSize = 12.sp) }, modifier = Modifier.testTag("plantroom.project-kind.${k.letter}"),
+                            shape = RoundedCornerShape(9.dp), colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Raised, selectedLabelColor = Gold))
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
                 OutlinedTextField(value = number, onValueChange = { number = it.uppercase().take(4); error = null }, singleLine = true,
-                    label = { Text(tr("Number (PXX)", "Número (PXX)")) }, modifier = Modifier.fillMaxWidth().testTag("plantroom.project-number"),
+                    label = { Text(tr("Number (P01, D01, R01, A01)", "Número (P01, D01, R01, A01)")) }, modifier = Modifier.fillMaxWidth().testTag("plantroom.project-number"),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next))
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(value = name, onValueChange = { name = it.take(60); error = null }, singleLine = true,
-                    label = { Text(tr("Project name", "Nombre del proyecto")) }, modifier = Modifier.fillMaxWidth().testTag("plantroom.project-name"),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { create() }))
+                    label = { Text(tr("Name", "Nombre")) }, modifier = Modifier.fillMaxWidth().testTag("plantroom.project-name"),
+                    keyboardOptions = KeyboardOptions(imeAction = if (kind == ProjectKind.PROJECT) ImeAction.Next else ImeAction.Done), keyboardActions = KeyboardActions(onDone = { create() }))
+                if (kind == ProjectKind.PROJECT) {
+                    Spacer(Modifier.height(10.dp))
+                    GoalAndDue(goal, { goal = it; error = null }, due, { due = it; error = null }, onDone = { create() })
+                }
                 error?.let { Text(it, color = Warning, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp)) }
             }
         },
         confirmButton = { TextButton(onClick = ::create) { Text(tr("Create", "Crear")) } },
+        dismissButton = { TextButton(onClick = onClose) { Text(tr("Cancel", "Cancelar")) } })
+}
+
+/** A project's name, and for P projects its goal and due date. The number stays: it is where its files are kept. */
+@Composable
+private fun EditProjectDialog(project: UiProject, actions: UiActions, onClose: () -> Unit) {
+    var name by rememberSaveable(project.id) { mutableStateOf(project.name) }
+    var goal by rememberSaveable(project.id) { mutableStateOf(project.goal) }
+    var due by rememberSaveable(project.id) { mutableStateOf(project.due) }
+    var error by remember { mutableStateOf<String?>(null) }
+    fun save() { error = actions.onUpdateProject(project.id, name, goal, due); if (error == null) onClose() }
+    AlertDialog(onDismissRequest = onClose, containerColor = Steel,
+        title = { Text("${project.id} · ${project.kind.label}") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                OutlinedTextField(value = name, onValueChange = { name = it.take(60); error = null }, singleLine = true,
+                    label = { Text(tr("Name", "Nombre")) }, modifier = Modifier.fillMaxWidth().testTag("plantroom.project-name"),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next))
+                if (project.kind == ProjectKind.PROJECT || project.goal.isNotBlank() || project.due.isNotBlank()) {
+                    Spacer(Modifier.height(10.dp))
+                    GoalAndDue(goal, { goal = it; error = null }, due, { due = it; error = null }, onDone = { save() })
+                }
+                error?.let { Text(it, color = Warning, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp)) }
+            }
+        },
+        confirmButton = { TextButton(onClick = ::save, modifier = Modifier.testTag("plantroom.project-save")) { Text(tr("Save", "Guardar")) } },
         dismissButton = { TextButton(onClick = onClose) { Text(tr("Cancel", "Cancelar")) } })
 }
 private fun filterLabel(filter: String) = when (filter) { "PHOTO" -> tr("Photos", "Fotos"); "AUDIO" -> tr("Voice notes", "Notas de voz"); "REPORT" -> tr("Reports", "Informes"); else -> tr("Sources", "Fuentes") }
